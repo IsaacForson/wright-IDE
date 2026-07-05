@@ -8,7 +8,17 @@ import { spawn } from "node:child_process";
  * memory by itself after a few minutes of inactivity.
  */
 
-const BASE = "http://localhost:11434";
+function BASE(): string {
+  return (vscode.workspace.getConfiguration("wright").get<string>("ollama.url") || "http://localhost:11434").replace(/\/$/, "");
+}
+
+export function ollamaOpenAiBase(): string {
+  return `${BASE()}/v1`;
+}
+
+export function isRemoteOllama(): boolean {
+  return !/localhost|127\.0\.0\.1/.test(BASE());
+}
 
 export interface LocalModel {
   name: string;
@@ -20,7 +30,7 @@ export async function isOllamaUp(timeoutMs = 1_200): Promise<boolean> {
   try {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
-    const res = await fetch(`${BASE}/api/tags`, { signal: controller.signal });
+    const res = await fetch(`${BASE()}/api/tags`, { signal: controller.signal });
     clearTimeout(timer);
     return res.ok;
   } catch {
@@ -31,6 +41,7 @@ export async function isOllamaUp(timeoutMs = 1_200): Promise<boolean> {
 /** Start Ollama if it isn't running (macOS app first, CLI daemon fallback). */
 export async function ensureOllamaRunning(): Promise<boolean> {
   if (await isOllamaUp()) return true;
+  if (isRemoteOllama()) return false; // can't start a remote server from here
   try {
     if (process.platform === "darwin") {
       spawn("open", ["-a", "Ollama"], { stdio: "ignore", detached: true }).unref();
@@ -49,7 +60,7 @@ export async function ensureOllamaRunning(): Promise<boolean> {
 
 export async function listLocalModels(): Promise<LocalModel[]> {
   try {
-    const res = await fetch(`${BASE}/api/tags`);
+    const res = await fetch(`${BASE()}/api/tags`);
     if (!res.ok) return [];
     const data = (await res.json()) as { models?: Array<{ name: string; size?: number; capabilities?: string[] }> };
     return (data.models ?? []).map((m) => ({
@@ -78,7 +89,7 @@ export async function pullModel(name: string): Promise<boolean> {
       const controller = new AbortController();
       token.onCancellationRequested(() => controller.abort());
       try {
-        const res = await fetch(`${BASE}/api/pull`, {
+        const res = await fetch(`${BASE()}/api/pull`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ model: name, stream: true }),
@@ -128,7 +139,7 @@ export async function pullModel(name: string): Promise<boolean> {
 /** Remove a downloaded model from disk (frees its full size). */
 export async function deleteModel(name: string): Promise<boolean> {
   try {
-    const res = await fetch(`${BASE}/api/delete`, {
+    const res = await fetch(`${BASE()}/api/delete`, {
       method: "DELETE",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ model: name }),
@@ -136,5 +147,21 @@ export async function deleteModel(name: string): Promise<boolean> {
     return res.ok;
   } catch {
     return false;
+  }
+}
+
+/** Friendly guidance when Ollama isn't installed/reachable. */
+export async function offerOllamaInstall(): Promise<void> {
+  const remote = isRemoteOllama();
+  const choice = await vscode.window.showWarningMessage(
+    remote
+      ? `Wright: can't reach the Ollama server at ${BASE()}. Check the URL in settings and that the server is running.`
+      : "Wright: Ollama isn't installed. It's a free one-time install (~1 min) — after that, local models are one-click.",
+    ...(remote ? ["Open Settings"] : ["Download Ollama"]),
+  );
+  if (choice === "Download Ollama") {
+    await vscode.env.openExternal(vscode.Uri.parse("https://ollama.com/download"));
+  } else if (choice === "Open Settings") {
+    await vscode.commands.executeCommand("workbench.action.openSettings", "wright.ollama.url");
   }
 }

@@ -25,7 +25,7 @@ import { IndexService } from "./IndexService.js";
 import { createDiagnosticsTool } from "./diagnosticsTool.js";
 import { TerminalHost } from "./terminalHost.js";
 import { DEFAULT_MODEL_LIST, getConfig } from "./config.js";
-import { RECOMMENDED_LOCAL_MODELS, deleteModel, ensureOllamaRunning, listLocalModels, pullModel } from "./ollama.js";
+import { RECOMMENDED_LOCAL_MODELS, deleteModel, ensureOllamaRunning, listLocalModels, offerOllamaInstall, ollamaOpenAiBase, pullModel } from "./ollama.js";
 import { getActiveFile, workspaceRoot } from "./workspace.js";
 import * as os from "node:os";
 import type { ChatMode, FileAttachment, HostToWebview, ResearchMode, UiItem, WebviewToHost } from "./protocol.js";
@@ -337,7 +337,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         // One-click local models: pick installed to use it, pick a
         // recommended one to download it — no settings involved.
         if (!(await ensureOllamaRunning())) {
-          vscode.window.showWarningMessage("Wright: Ollama isn't running and couldn't be started. Install it from ollama.com.");
+          await offerOllamaInstall();
           return;
         }
         await this.showLocalModelPicker();
@@ -735,12 +735,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       // User explicitly picked a local model: it's the primary; NVIDIA backs it up.
       agentModel = model.slice("ollama:".length);
       if (!(await ensureOllamaRunning())) {
-        throw new Error("Ollama isn't running and couldn't be started — install it from ollama.com or pick a cloud model.");
+        void offerOllamaInstall();
+        throw new Error("Ollama isn't reachable — install/start it (or fix wright.ollama.url), or pick a cloud model.");
       }
       targets.push({
         name: "ollama (local)",
         model: agentModel,
-        client: new ModelClient(openAICompatibleProvider({ id: "ollama", name: "Ollama", baseUrl: "http://localhost:11434/v1", chatModel: agentModel })),
+        client: new ModelClient(openAICompatibleProvider({ id: "ollama", name: "Ollama", baseUrl: ollamaOpenAiBase(), chatModel: agentModel })),
       });
       targets.push({
         name: "nvidia",
@@ -765,7 +766,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         targets.push({
           name: "ollama (local)",
           model: ollamaModel,
-          client: new ModelClient(openAICompatibleProvider({ id: "ollama", name: "Ollama", baseUrl: "http://localhost:11434/v1", chatModel: ollamaModel })),
+          client: new ModelClient(openAICompatibleProvider({ id: "ollama", name: "Ollama", baseUrl: ollamaOpenAiBase(), chatModel: ollamaModel })),
         });
       }
     }

@@ -348,6 +348,11 @@
               "command"
             ]
           }
+        },
+        "wright.ollama.url": {
+          "type": "string",
+          "default": "http://localhost:11434",
+          "markdownDescription": "Ollama server URL. Point this at a REMOTE Ollama (e.g. a rented GPU box: `http://your-server:11434`) to run big local models off-machine \u2014 the picker, downloads, and fallback all follow it."
         }
       }
     }
