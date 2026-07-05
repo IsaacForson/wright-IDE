@@ -19,20 +19,13 @@ import {
 import { NodeWorkspaceHost, connectMcpServers, loadRulesFile, type McpConnection, type McpServerConfig } from "@wright/core/node";
 import { IndexService } from "./IndexService.js";
 import { getConfig } from "./config.js";
-import { workspaceRoot } from "./workspace.js";
-import type { HostToWebview, UiItem, WebviewToHost } from "./protocol.js";
+import { getActiveFile, workspaceRoot } from "./workspace.js";
+import type { ChatMode, FileAttachment, HostToWebview, ResearchMode, UiItem, WebviewToHost } from "./protocol.js";
+import type { AgentMode } from "@wright/core";
 
 /** Virtual document scheme serving pre-edit snapshots for the diff editor. */
 export const ORIGINAL_SCHEME = "wright-original";
 
-/** Models offered in the picker — all verified tool-capable on NVIDIA NIM. */
-const KNOWN_MODELS = [
-  "z-ai/glm-5.2",
-  "deepseek-ai/deepseek-v4-pro",
-  "moonshotai/kimi-k2.6",
-  "meta/llama-3.3-70b-instruct",
-  "meta/llama-3.1-8b-instruct",
-];
 
 export class ChatViewProvider implements vscode.WebviewViewProvider {
   static readonly viewType = "wright.chat";
@@ -52,6 +45,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   /** MCP connections (Phase 11), established once per window. */
   private mcp: McpConnection | undefined;
   private mcpAttempted = false;
+  /** What the current agent was built for; a mismatch forces a rebuild. */
+  private agentBuiltFor: { model: string; mode: AgentMode } | undefined;
+  /** Cached workspace file list for the @-mention picker. */
+  private fileListCache: { entries: Array<{ path: string; type: "file" | "dir" }>; at: number } | undefined;
+  /** A big-looking agent task parked while the user decides Plan vs Agent. */
+  private pendingSuggest: { text: string; images?: string[]; files?: FileAttachment[] } | undefined;
 
   constructor(
     private readonly extensionUri: vscode.Uri,
@@ -59,7 +58,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     /** Workspace-scoped persistence for chat sessions (Phase 10). */
     private readonly memento: vscode.Memento,
   ) {
-    this.model = getConfig().chatModel;
+    this.model = "auto"; // routes per task: fast for Ask, vision for images, strong for agent work
     this.approvalMode = getConfig().approvalMode;
     this.restoreSession();
   }
@@ -101,9 +100,51 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     view.webview.onDidReceiveMessage((msg: WebviewToHost) => this.onMessage(msg));
   }
 
+  /** Editor context menu: attach the selection to the composer as reference. */
+  async addSelectionToChat(): Promise<void> {
+    const info = getActiveFile();
+    if (!info?.selection) {
+      vscode.window.showInformationMessage("Wright: select some code first.");
+      return;
+    }
+    await this.ensureViewOpen();
+    const name = `${info.path.split("/").pop()}:${info.selection.startLine}-${info.selection.endLine}`;
+    this.post({
+      type: "attachSelection",
+      file: { name, content: `// ${info.path} (lines ${info.selection.startLine}-${info.selection.endLine})\n${info.selection.text}` },
+    });
+  }
+
+  /** Editor context menu: one-shot Explain / Review on the selection (Ask mode). */
+  async runSelectionAction(action: "explain" | "review"): Promise<void> {
+    const info = getActiveFile();
+    if (!info?.selection) {
+      vscode.window.showInformationMessage("Wright: select some code first.");
+      return;
+    }
+    await this.ensureViewOpen();
+    const where = `${info.path}:${info.selection.startLine}-${info.selection.endLine}`;
+    const instruction =
+      action === "explain"
+        ? `Explain the following code from ${where}. Cover what it does, how, and anything non-obvious:`
+        : `Review the following code from ${where}. Look for bugs, edge cases, and concrete improvements — be specific and cite lines:`;
+    await this.handleSend(`${instruction}\n\`\`\`${info.languageId}\n${info.selection.text}\n\`\`\``, {
+      mode: "ask",
+      displayText: `${action === "explain" ? "Explain" : "Review"} ${where}`,
+    });
+  }
+
+  private async ensureViewOpen(): Promise<void> {
+    if (this.view) return;
+    await vscode.commands.executeCommand("wright.chat.focus");
+    // Give the webview a beat to resolve and announce ready.
+    await new Promise((resolve) => setTimeout(resolve, 400));
+  }
+
   newChat(): void {
     this.abort?.abort();
     this.agent = undefined;
+    this.agentBuiltFor = undefined;
     // Changes stay on disk; starting a new chat just stops tracking them.
     this.tracker = undefined;
     this.pendingPlan = undefined;
@@ -118,7 +159,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   private sendState(busy: boolean): void {
-    const models = KNOWN_MODELS.includes(this.model) ? KNOWN_MODELS : [this.model, ...KNOWN_MODELS];
+    const config = getConfig();
+    const models = ["auto", ...config.modelList];
+    if (!models.includes(this.model)) models.splice(1, 0, this.model);
     this.post({
       type: "state",
       items: this.items,
@@ -129,6 +172,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       planPending: this.pendingPlan !== undefined,
       approvalMode: this.approvalMode,
       sessionStats: this.formatSessionStats(),
+      defaultMode: config.defaultMode,
     });
   }
 
@@ -162,30 +206,46 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         return;
       case "setModel":
         this.model = msg.model;
-        this.agent = undefined; // next turn builds a fresh agent on the new model
+        this.agentBuiltFor = undefined; // next turn rebuilds on the new model
         return;
       case "setApprovalMode":
         this.approvalMode = msg.mode;
         void vscode.workspace.getConfiguration("wright").update("approvalMode", msg.mode);
         return;
       case "send":
-        if (msg.images && msg.images.length > 0) {
-          // Images force a vision-capable model for this conversation.
-          const visionModel = getConfig().visionModel;
-          if (this.model !== visionModel) {
-            this.model = visionModel;
-            this.agent = undefined;
-            vscode.window.setStatusBarMessage(`Wright: switched to ${visionModel} for image input`, 4_000);
-          }
-          await this.handleSend(msg.text, { images: msg.images });
-        } else if (this.pendingPlan) {
+        if (this.pendingPlan && !msg.images?.length) {
           // Typing while a plan awaits approval = revision feedback.
           await this.handlePlan(this.pendingPlan.task, msg.text);
-        } else if (msg.planFirst) {
+        } else if (msg.mode === "plan" && !msg.images?.length) {
           await this.handlePlan(msg.text);
         } else {
-          await this.handleSend(msg.text);
+          const mode: AgentMode = msg.mode === "plan" || msg.mode === "agent" ? "agent" : msg.mode;
+          // Big-task detection (agent mode only): offer to plan first.
+          if (mode === "agent" && msg.mode === "agent" && !msg.images?.length && (await this.looksLikeBigTask(msg.text))) {
+            this.pendingSuggest = { text: msg.text, images: msg.images, files: msg.files };
+            this.items.push({ kind: "text", role: "user", content: msg.text, files: msg.files?.map((f) => f.name) });
+            this.post({ type: "planSuggest" });
+            this.sendState(false);
+            return;
+          }
+          await this.handleSend(msg.text, { images: msg.images, files: msg.files, mode });
         }
+        return;
+      case "planDecision": {
+        const parked = this.pendingSuggest;
+        this.pendingSuggest = undefined;
+        if (!parked) return;
+        if (msg.usePlan) {
+          // The user message is already in the transcript; plan without re-adding it.
+          this.items.pop();
+          await this.handlePlan(parked.text);
+        } else {
+          await this.handleSend(parked.text, { ...parked, mode: "agent", skipUserItem: true });
+        }
+        return;
+      }
+      case "queryFiles":
+        await this.handleQueryFiles(msg.query, msg.token);
         return;
       case "executePlan": {
         const pending = this.pendingPlan;
@@ -236,18 +296,102 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     );
   }
 
-  private async buildAgent(apiKey: string): Promise<Agent> {
+  /**
+   * Is this request big enough that planning first would help? Cheap
+   * word-count/keyword gate first; only genuinely ambiguous ones spend a
+   * ~1s fast-model classification. Fails open (false) on any error.
+   */
+  private async looksLikeBigTask(text: string): Promise<boolean> {
+    const words = text.trim().split(/\s+/).length;
+    if (words < 12) return false;
+    const bigSignals = /(build|create|implement|design|make)\b.{0,40}\b(app|application|project|website|system|dashboard|platform|feature|page|screen)|entire|whole|full[- ]?(stack|project|app)|from scratch|multiple|several|redesign|overhaul/i;
+    if (words > 120) return true;
+    if (!bigSignals.test(text)) return false;
+    const config = getConfig();
+    if (!config.apiKey) return false;
+    try {
+      const client = new ModelClient(nvidiaProvider({ apiKey: config.apiKey, chatModel: config.fastModel }));
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 4_000);
+      const result = await client.complete(
+        {
+          model: config.fastModel,
+          messages: [
+            {
+              role: "system",
+              content:
+                "Classify the coding request. Reply with exactly one word. " +
+                "BIG = building a whole app/project, a feature spanning many files, or several distinct tasks. " +
+                "SMALL = a focused change, single file, bug fix, or question.",
+            },
+            { role: "user", content: text.slice(0, 2_000) },
+          ],
+          max_tokens: 300,
+          temperature: 0,
+        },
+        { signal: controller.signal, retry: { maxAttempts: 1 } },
+      );
+      clearTimeout(timer);
+      return /\bBIG\b/i.test(result.message.content ?? "");
+    } catch {
+      return false;
+    }
+  }
+
+  /** Resolve "auto" to a concrete model for this turn (Phase 10 routing). */
+  private resolveModel(mode: AgentMode, hasImages: boolean): string {
+    const config = getConfig();
+    if (hasImages) return config.visionModel;
+    if (this.model !== "auto") return this.model;
+    return mode === "ask" ? config.fastModel : config.chatModel;
+  }
+
+  private async handleQueryFiles(query: string, token: number): Promise<void> {
+    if (!this.fileListCache || Date.now() - this.fileListCache.at > 30_000) {
+      const uris = await vscode.workspace.findFiles("**/*", "**/{node_modules,.git,dist,out,build,coverage}/**", 3_000);
+      const files = uris.map((u) => vscode.workspace.asRelativePath(u, false)).sort();
+      const dirs = new Set<string>();
+      for (const f of files) {
+        const parts = f.split("/");
+        for (let i = 1; i < parts.length; i++) dirs.add(parts.slice(0, i).join("/"));
+      }
+      this.fileListCache = {
+        at: Date.now(),
+        entries: [
+          ...[...dirs].sort().map((d) => ({ path: d, type: "dir" as const })),
+          ...files.map((f) => ({ path: f, type: "file" as const })),
+        ],
+      };
+    }
+    const q = query.toLowerCase();
+    const scored = this.fileListCache.entries
+      .filter((e) => !q || e.path.toLowerCase().includes(q))
+      .sort((a, b) => {
+        // Basename matches beat path matches; shorter paths beat longer.
+        const aBase = a.path.split("/").pop()!.toLowerCase().startsWith(q) ? 0 : 1;
+        const bBase = b.path.split("/").pop()!.toLowerCase().startsWith(q) ? 0 : 1;
+        return aBase - bBase || a.path.length - b.path.length;
+      })
+      .slice(0, 25);
+    this.post({ type: "fileList", token, entries: scored });
+  }
+
+  private async buildAgent(apiKey: string, model: string, mode: AgentMode): Promise<Agent> {
     const root = workspaceRoot();
     if (!root) throw new Error("Open a folder first — Wright's agent needs a workspace to work in.");
     const config = getConfig();
     const client = new ModelClient(
-      nvidiaProvider({ apiKey, chatModel: this.model, fastModel: config.fastModel }),
+      nvidiaProvider({ apiKey, chatModel: model, fastModel: config.fastModel }),
     );
     this.tracker ??= new TrackedHost(new NodeWorkspaceHost(root.fsPath));
-    const tools = createBuiltinTools(this.tracker);
+    let tools = createBuiltinTools(this.tracker);
     const indexer = await this.indexService.ensure(client, root.fsPath);
     if (indexer) tools.push(createCodebaseSearchTool(indexer));
     tools.push(createWebSearchTool(config.webSearch));
+    if (mode === "ask") {
+      const readOnly = new Set(["read_file", "list_dir", "search", "codebase_search", "web_search"]);
+      tools = tools.filter((t) => readOnly.has(t.definition.function.name));
+    }
     const rules = await loadRulesFile(root.fsPath);
 
     // MCP tool servers (Phase 11), from wright.mcp.servers.
@@ -267,9 +411,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
     const agent = new Agent({
       client,
-      model: this.model,
+      model,
       tools,
-      systemPrompt: agentSystemPrompt({ workspaceName: vscode.workspace.name, rules }),
+      systemPrompt: agentSystemPrompt({ workspaceName: vscode.workspace.name, rules, mode }),
       approve: async (name, args) => {
         const decision = new ApprovalPolicy({ mode: this.approvalMode }).decide(name, args);
         if (decision.action === "allow") return true;
@@ -310,7 +454,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this.items.push({ kind: "text", role: "user", content: feedback ?? task });
     this.sendState(true);
 
-    const client = new ModelClient(nvidiaProvider({ apiKey: config.apiKey, chatModel: this.model }));
+    const planModel = this.model === "auto" ? config.chatModel : this.model;
+    const client = new ModelClient(nvidiaProvider({ apiKey: config.apiKey, chatModel: planModel }));
     this.abort = new AbortController();
     const planItem: Extract<UiItem, { kind: "text" }> = { kind: "text", role: "assistant", content: "" };
     this.items.push(planItem);
@@ -321,7 +466,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       const context = indexer ? await planContext(indexer, task, this.abort.signal) : undefined;
       const plan = await generatePlan(
         client,
-        this.model,
+        planModel,
         { task, context, priorPlan, feedback },
         {
           signal: this.abort.signal,
@@ -349,7 +494,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     }
   }
 
-  private async handleSend(text: string, opts: { displayText?: string; images?: string[] } = {}): Promise<void> {
+  private async handleSend(
+    text: string,
+    opts: { displayText?: string; images?: string[]; files?: FileAttachment[]; mode?: AgentMode; skipUserItem?: boolean } = {},
+  ): Promise<void> {
     if (this.abort) return; // already running; UI disables send, but guard anyway
 
     const config = getConfig();
@@ -362,25 +510,60 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       return;
     }
 
+    const mode = opts.mode ?? "agent";
+    const resolvedModel = this.resolveModel(mode, (opts.images?.length ?? 0) > 0);
     try {
-      this.agent ??= await this.buildAgent(config.apiKey);
+      if (!this.agent || this.agentBuiltFor?.model !== resolvedModel || this.agentBuiltFor.mode !== mode) {
+        // Carry the conversation across model/mode switches.
+        if (this.agent) this.savedMessages = [...this.agent.history];
+        this.agent = await this.buildAgent(config.apiKey, resolvedModel, mode);
+        this.agentBuiltFor = { model: resolvedModel, mode };
+      }
     } catch (err) {
       this.post({ type: "error", message: err instanceof Error ? err.message : String(err) });
       return;
     }
 
-    this.items.push({ kind: "text", role: "user", content: opts.displayText ?? text, images: opts.images });
+    if (!opts.skipUserItem) {
+      this.items.push({
+        kind: "text",
+        role: "user",
+        content: opts.displayText ?? text,
+        images: opts.images,
+        files: opts.files?.map((f) => f.name),
+      });
+    }
     this.sendState(true);
     text = await this.expandMentions(text);
+    text = await this.expandAttachments(text, opts.files);
 
     this.abort = new AbortController();
     const start = Date.now();
     let currentText: Extract<UiItem, { kind: "text" }> | undefined;
+    let currentThinking: Extract<UiItem, { kind: "thinking" }> | undefined;
+    let thinkingStart = 0;
+    const endThinking = () => {
+      if (!currentThinking) return;
+      currentThinking.seconds = Math.round((Date.now() - thinkingStart) / 1000);
+      this.post({ type: "thinkingDone", seconds: currentThinking.seconds });
+      currentThinking = undefined;
+    };
 
     try {
       for await (const event of this.agent.run(text, { signal: this.abort.signal, images: opts.images })) {
         switch (event.type) {
+          case "reasoning":
+            if (!currentThinking) {
+              currentThinking = { kind: "thinking", content: "", seconds: 0 };
+              thinkingStart = Date.now();
+              this.items.push(currentThinking);
+              currentText = undefined;
+            }
+            currentThinking.content += event.text;
+            this.post({ type: "thinkingDelta", text: event.text });
+            break;
           case "text":
+            endThinking();
             if (!currentText) {
               currentText = { kind: "text", role: "assistant", content: "" };
               this.items.push(currentText);
@@ -390,6 +573,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             this.post({ type: "delta", text: event.text });
             break;
           case "tool_start": {
+            endThinking();
             currentText = undefined;
             const argsSummary = summarizeArgs(event.name, event.args);
             this.items.push({ kind: "tool", id: event.id, name: event.name, argsSummary, status: "running" });
@@ -408,6 +592,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             break;
           }
           case "done": {
+            endThinking();
             this.sessionUsage.input += event.usage.prompt_tokens;
             this.sessionUsage.output += event.usage.completion_tokens;
             const secs = ((Date.now() - start) / 1000).toFixed(1);
@@ -430,6 +615,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       }
     } finally {
       this.abort = undefined;
+      // Optional hands-off mode: accept every edit as soon as the turn ends.
+      if (getConfig().autoKeep) this.tracker?.keepAll();
       this.persistSession();
       this.sendState(false);
     }
@@ -441,17 +628,44 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
    */
   private async expandMentions(text: string): Promise<string> {
     if (!this.tracker || !text.includes("@")) return text;
-    const mentions = [...text.matchAll(/@([\w@./\\-]+)/g)].map((m) => m[1]!);
+    const mentions = [...text.matchAll(/@([\w@./\\-]+)/g)].map((m) => m[1]!.replace(/\/$/, ""));
     const attachments: string[] = [];
     for (const rel of new Set(mentions)) {
       try {
         const content = await this.tracker.readFile(rel);
         attachments.push(`\n\n[Attached file @${rel}]\n\`\`\`\n${content.slice(0, 16_000)}\n\`\`\``);
       } catch {
-        // not a file — leave the token as plain text
+        // Not a file — maybe a folder: attach its listing so the agent can dig in.
+        try {
+          const entries = await this.tracker.listDir(rel);
+          const listing = entries.map((e) => (e.type === "dir" ? `${e.name}/` : e.name)).join("\n");
+          attachments.push(`\n\n[Attached folder @${rel} — contents]\n${listing.slice(0, 4_000)}`);
+        } catch {
+          // neither — leave the token as plain text
+        }
       }
     }
     return attachments.length > 0 ? text + attachments.join("") : text;
+  }
+
+  /** Files attached via drag & drop or the paperclip (Cursor-style reference context). */
+  private async expandAttachments(text: string, files?: FileAttachment[]): Promise<string> {
+    if (!files || files.length === 0) return text;
+    const blocks: string[] = [];
+    for (const file of files) {
+      let content = file.content;
+      if (content === undefined && file.path && this.tracker) {
+        try {
+          content = await this.tracker.readFile(file.path);
+        } catch {
+          content = undefined;
+        }
+      }
+      if (content !== undefined) {
+        blocks.push(`\n\n[Attached file: ${file.path ?? file.name}]\n\`\`\`\n${content.slice(0, 16_000)}\n\`\`\``);
+      }
+    }
+    return blocks.length > 0 ? text + blocks.join("") : text;
   }
 
   private html(webview: vscode.Webview): string {

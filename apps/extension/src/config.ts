@@ -15,7 +15,25 @@ export interface WrightConfig {
   /** USD per 1M tokens; 0 disables the cost estimate. */
   priceInPer1M: number;
   priceOutPer1M: number;
+  /** Models shown in the picker (user-editable). */
+  modelList: string[];
+  /** Mode the chat starts in. */
+  defaultMode: "agent" | "plan" | "debug" | "ask" | "multi";
+  /** Automatically keep all agent edits after each turn. */
+  autoKeep: boolean;
 }
+
+export const DEFAULT_MODEL_LIST = [
+  "z-ai/glm-5.2",
+  "mistralai/mistral-large-3-675b-instruct-2512",
+  "deepseek-ai/deepseek-v4-pro",
+  "moonshotai/kimi-k2.6",
+  "nvidia/nemotron-3-super-120b-a12b",
+  "qwen/qwen3.5-122b-a10b",
+  "minimaxai/minimax-m3",
+  "meta/llama-3.3-70b-instruct",
+  "meta/llama-3.1-8b-instruct",
+];
 
 /**
  * API key resolution order: VS Code setting → NVIDIA_API_KEY env var →
@@ -38,6 +56,9 @@ export function getConfig(): WrightConfig {
     approvalMode: (cfg.get<string>("approvalMode") as ApprovalMode) || "auto-edit",
     priceInPer1M: cfg.get<number>("pricing.inputPer1M") ?? 0,
     priceOutPer1M: cfg.get<number>("pricing.outputPer1M") ?? 0,
+    modelList: cfg.get<string[]>("models.list")?.filter(Boolean) ?? DEFAULT_MODEL_LIST,
+    defaultMode: (cfg.get<string>("defaultMode") as WrightConfig["defaultMode"]) || "agent",
+    autoKeep: cfg.get<boolean>("edits.autoKeep") ?? false,
   };
 }
 

@@ -58,6 +58,18 @@
         "command": "wright.generateCommitMessage",
         "title": "Wright: Generate Commit Message",
         "icon": "$(sparkle)"
+      },
+      {
+        "command": "wright.addSelectionToChat",
+        "title": "Add Selection to Chat"
+      },
+      {
+        "command": "wright.explainSelection",
+        "title": "Explain"
+      },
+      {
+        "command": "wright.reviewSelection",
+        "title": "Review"
       }
     ],
     "keybindings": [
@@ -81,6 +93,28 @@
           "command": "wright.generateCommitMessage",
           "when": "scmProvider == git",
           "group": "navigation"
+        }
+      ],
+      "editor/context": [
+        {
+          "command": "wright.addSelectionToChat",
+          "when": "editorHasSelection",
+          "group": "0_wright@1"
+        },
+        {
+          "command": "wright.inlineEdit",
+          "when": "editorTextFocus",
+          "group": "0_wright@2"
+        },
+        {
+          "command": "wright.explainSelection",
+          "when": "editorHasSelection",
+          "group": "0_wright@3"
+        },
+        {
+          "command": "wright.reviewSelection",
+          "when": "editorHasSelection",
+          "group": "0_wright@4"
         }
       ]
     },
@@ -163,6 +197,33 @@
           "type": "string",
           "default": "http://localhost:11434",
           "description": "Base URL of the local Ollama server."
+        },
+        "wright.models.list": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": [
+            "z-ai/glm-5.2",
+            "mistralai/mistral-large-3-675b-instruct-2512",
+            "deepseek-ai/deepseek-v4-pro",
+            "moonshotai/kimi-k2.6",
+            "nvidia/nemotron-3-super-120b-a12b",
+            "qwen/qwen3.5-122b-a10b",
+            "minimaxai/minimax-m3",
+            "meta/llama-3.3-70b-instruct",
+            "meta/llama-3.1-8b-instruct"
+          ],
+          "markdownDescription": "Models shown in the chat picker. Add or remove any NVIDIA NIM model id (must support tool calling for agent work — check with `pnpm verify -- <id>`). \"auto\" is always included."
+        },
+        "wright.defaultMode": {
+          "type": "string",
+          "enum": ["agent", "plan", "debug", "ask", "multi"],
+          "default": "agent",
+          "description": "Mode the chat starts in."
+        },
+        "wright.edits.autoKeep": {
+          "type": "boolean",
+          "default": false,
+          "description": "Automatically keep all agent edits after each turn (skip the manual Keep all). Files remain revertible only until the turn ends."
         },
         "wright.mcp.servers": {
           "type": "object",

@@ -129,6 +129,9 @@ export class ModelClient {
     // Tool calls arrive as deltas keyed by index: first frame has id+name,
     // subsequent frames append argument fragments.
     const toolCalls = new Map<number, ToolCall>();
+    // Some models put chain-of-thought in an inline <think>…</think> block
+    // instead of reasoning_content; split it out so callers see one shape.
+    const thinkSplitter = new ThinkTagSplitter();
 
     for await (const raw of parseSSE(res.body, { signal: opts.signal })) {
       const chunk = raw as StreamChunk;
@@ -145,8 +148,15 @@ export class ModelClient {
         yield { type: "reasoning", text: delta.reasoning_content };
       }
       if (delta.content) {
-        text += delta.content;
-        yield { type: "text", text: delta.content };
+        for (const part of thinkSplitter.push(delta.content)) {
+          if (part.kind === "reasoning") {
+            reasoning += part.text;
+            yield { type: "reasoning", text: part.text };
+          } else {
+            text += part.text;
+            yield { type: "text", text: part.text };
+          }
+        }
       }
       for (const tc of delta.tool_calls ?? []) {
         const existing = toolCalls.get(tc.index);
@@ -165,6 +175,16 @@ export class ModelClient {
           if (tc.function?.name) existing.function.name += tc.function.name;
           if (tc.function?.arguments) existing.function.arguments += tc.function.arguments;
         }
+      }
+    }
+
+    for (const part of thinkSplitter.flush()) {
+      if (part.kind === "reasoning") {
+        reasoning += part.text;
+        yield { type: "reasoning", text: part.text };
+      } else {
+        text += part.text;
+        yield { type: "text", text: part.text };
       }
     }
 
@@ -220,5 +240,65 @@ export class ModelClient {
       },
       { ...opts.retry, signal: opts.signal },
     );
+  }
+}
+
+type ThinkPart = { kind: "text" | "reasoning"; text: string };
+
+/**
+ * Splits inline <think>…</think> chain-of-thought (emitted by some models
+ * at the very start of a response) away from real content, tolerating tags
+ * fragmented across stream chunks.
+ */
+class ThinkTagSplitter {
+  private state: "undecided" | "in" | "out" = "undecided";
+  private carry = "";
+
+  push(chunk: string): ThinkPart[] {
+    this.carry += chunk;
+    const out: ThinkPart[] = [];
+    while (true) {
+      if (this.state === "undecided") {
+        const lead = this.carry.trimStart();
+        if (lead.length === 0) return out;
+        if (lead.startsWith("<think>")) {
+          this.state = "in";
+          this.carry = lead.slice("<think>".length);
+          continue;
+        }
+        // Could still be a partial "<think" prefix — wait for more bytes.
+        if (lead.length < "<think>".length && "<think>".startsWith(lead)) return out;
+        this.state = "out";
+        continue;
+      }
+      if (this.state === "in") {
+        const end = this.carry.indexOf("</think>");
+        if (end === -1) {
+          // Emit all but a tail that might be a fragmented closing tag.
+          const safe = this.carry.length - "</think>".length;
+          if (safe > 0) {
+            out.push({ kind: "reasoning", text: this.carry.slice(0, safe) });
+            this.carry = this.carry.slice(safe);
+          }
+          return out;
+        }
+        if (end > 0) out.push({ kind: "reasoning", text: this.carry.slice(0, end) });
+        this.carry = this.carry.slice(end + "</think>".length).replace(/^\n+/, "");
+        this.state = "out";
+        continue;
+      }
+      if (this.carry) {
+        out.push({ kind: "text", text: this.carry });
+        this.carry = "";
+      }
+      return out;
+    }
+  }
+
+  flush(): ThinkPart[] {
+    const rest = this.carry;
+    this.carry = "";
+    if (!rest) return [];
+    return [{ kind: this.state === "in" ? "reasoning" : "text", text: rest }];
   }
 }

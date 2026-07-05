@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "wright-webview-harness",
+      "runtimeExecutable": "node",
+      "runtimeArgs": ["/private/tmp/claude-501/-Users-isaacforson-Desktop-PROJECTS-Personal-Wright/dc352f6f-bede-4242-ae09-64fba1c68ca1/scratchpad/harness/server.mjs"],
+      "port": 8931
+    }
+  ]
+}
