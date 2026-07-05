@@ -14,7 +14,15 @@ export function estimateTokens(text: string): number {
 }
 
 export function estimateMessageTokens(msg: ChatMessage): number {
-  let count = PER_MESSAGE_OVERHEAD + estimateTokens(msg.content ?? "");
+  let count = PER_MESSAGE_OVERHEAD;
+  if (msg.role === "user" && Array.isArray(msg.content)) {
+    for (const part of msg.content) {
+      // Flat per-image cost — a vision tile is ~hundreds of tokens regardless.
+      count += part.type === "text" ? estimateTokens(part.text) : 800;
+    }
+  } else {
+    count += estimateTokens((msg.content as string) ?? "");
+  }
   if (msg.role === "assistant" && msg.tool_calls) {
     for (const tc of msg.tool_calls) {
       count += estimateTokens(tc.function.name) + estimateTokens(tc.function.arguments) + 8;

@@ -57,14 +57,31 @@ export class Agent {
     this.messages = [this.messages[0]!, ...messages.filter((m) => m.role !== "system")];
   }
 
-  /** Run one user turn to completion, yielding events as they happen. */
-  async *run(userText: string, runOpts: { signal?: AbortSignal } = {}): AsyncGenerator<AgentEvent> {
+  /**
+   * Run one user turn to completion, yielding events as they happen.
+   * Pass `images` (data: URIs) to send a multimodal message — requires a
+   * vision-capable model.
+   */
+  async *run(
+    userText: string,
+    runOpts: { signal?: AbortSignal; images?: string[] } = {},
+  ): AsyncGenerator<AgentEvent> {
     const { client, model } = this.opts;
     const maxIterations = this.opts.maxIterations ?? 25;
     const totalUsage: Usage = { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 };
     let finalText = "";
 
-    this.messages.push({ role: "user", content: userText });
+    if (runOpts.images && runOpts.images.length > 0) {
+      this.messages.push({
+        role: "user",
+        content: [
+          { type: "text", text: userText },
+          ...runOpts.images.map((url) => ({ type: "image_url" as const, image_url: { url } })),
+        ],
+      });
+    } else {
+      this.messages.push({ role: "user", content: userText });
+    }
 
     for (let iteration = 1; iteration <= maxIterations; iteration++) {
       this.messages = this.budget.trimToFit(this.messages);

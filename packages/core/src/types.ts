@@ -11,9 +11,15 @@ export interface SystemMessage {
   content: string;
 }
 
+/** Multimodal content parts (OpenAI vision format). */
+export type ContentPart =
+  | { type: "text"; text: string }
+  | { type: "image_url"; image_url: { url: string } };
+
 export interface UserMessage {
   role: "user";
-  content: string;
+  /** String, or an array of parts for multimodal (text + images) input. */
+  content: string | ContentPart[];
 }
 
 export interface AssistantMessage {
