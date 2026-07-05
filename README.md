@@ -21,6 +21,18 @@ pnpm verify            # proves chat + streaming + tool calling work
 pnpm chat              # interactive streaming chat
 ```
 
+## Running the VS Code extension (the real UI)
+
+The `pnpm chat`/`pnpm agent` commands are terminal test harnesses. The actual
+interface is the VS Code extension:
+
+- **Dev loop:** open this repo in VS Code and press **F5** ("Run Wright
+  Extension") — a second window opens with Wright loaded; click the **W** icon
+  in the activity bar.
+- **Install permanently:** `pnpm package` builds `apps/extension/wright-extension-0.1.0.vsix`.
+  Install it via the Extensions panel → **⋯ → Install from VSIX…**, or
+  `code --install-extension apps/extension/wright-extension-0.1.0.vsix`.
+
 `pnpm verify` runs the four Phase 0.2 checks. **Check 4 (tool calling) is the
 one that matters** — if your chosen model fails it, the agent loop (Phase 3)
 cannot work. Test alternatives with `pnpm verify -- <model-id>`; check 1

@@ -9,7 +9,8 @@
     "verify": "pnpm --filter @wright/core build && pnpm --filter @wright/cli verify",
     "chat": "pnpm --filter @wright/core build && pnpm --filter @wright/cli chat",
     "agent": "pnpm --filter @wright/core build && pnpm --filter @wright/cli agent",
-    "index": "pnpm --filter @wright/core build && pnpm --filter @wright/cli index"
+    "index": "pnpm --filter @wright/core build && pnpm --filter @wright/cli index",
+    "package": "pnpm --filter wright-extension package"
   },
   "engines": {
     "node": ">=20"

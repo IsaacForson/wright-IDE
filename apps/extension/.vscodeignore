@@ -1,0 +1,13 @@
+# Everything the runtime doesn't need — the extension is a self-contained
+# esbuild bundle in dist/, so source, maps, and build config are excluded.
+.vscode/**
+src/**
+webview/**
+esbuild.mjs
+tsconfig.json
+**/*.map
+**/*.ts
+**/*.tsx
+.gitignore
+.vscodeignore
+node_modules/**

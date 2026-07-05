@@ -1,14 +1,21 @@
 {
   "name": "wright-extension",
   "displayName": "Wright",
-  "description": "A Cursor-like AI assistant powered by NVIDIA NIM",
+  "description": "A Cursor-like AI coding agent powered by NVIDIA NIM",
   "version": "0.1.0",
-  "private": true,
   "publisher": "wright-dev",
+  "license": "MIT",
+  "icon": "media/icon.png",
   "engines": {
     "vscode": "^1.90.0"
   },
-  "categories": ["AI", "Chat"],
+  "categories": ["AI", "Chat", "Programming Languages"],
+  "keywords": ["ai", "agent", "nvidia", "nim", "copilot", "chat"],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Youngtech303/Wright.git",
+    "directory": "apps/extension"
+  },
   "main": "./dist/extension.js",
   "contributes": {
     "viewsContainers": {
@@ -177,20 +184,22 @@
   "scripts": {
     "build": "node esbuild.mjs",
     "watch": "node esbuild.mjs --watch",
-    "typecheck": "tsc -p tsconfig.json --noEmit"
-  },
-  "dependencies": {
-    "@wright/core": "workspace:*",
-    "marked": "^15.0.0",
-    "react": "^18.3.0",
-    "react-dom": "^18.3.0"
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "vscode:prepublish": "pnpm --filter @wright/core build && node esbuild.mjs",
+    "package": "vsce package --no-dependencies"
   },
   "devDependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
     "@types/node": "^22.10.0",
     "@types/react": "^18.3.0",
     "@types/react-dom": "^18.3.0",
     "@types/vscode": "^1.90.0",
+    "@vscode/vsce": "^3.2.0",
+    "@wright/core": "workspace:*",
     "esbuild": "^0.28.0",
+    "marked": "^15.0.0",
+    "react": "^18.3.0",
+    "react-dom": "^18.3.0",
     "typescript": "^5.7.0"
   }
 }
