@@ -1,14 +1,55 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { marked } from "marked";
+import hljs from "highlight.js/lib/core";
+import ts from "highlight.js/lib/languages/typescript";
+import js from "highlight.js/lib/languages/javascript";
+import python from "highlight.js/lib/languages/python";
+import json from "highlight.js/lib/languages/json";
+import xml from "highlight.js/lib/languages/xml";
+import css from "highlight.js/lib/languages/css";
+import bash from "highlight.js/lib/languages/bash";
+import markdown from "highlight.js/lib/languages/markdown";
 import type { ChatMode, FileAttachment, HostToWebview, ResearchMode, UiItem } from "../src/protocol.js";
 import { post } from "./vscode.js";
 import { Icon, IconButton, Select, toolIcon, type SelectOption } from "./components.js";
 
+hljs.registerLanguage("typescript", ts);
+hljs.registerLanguage("javascript", js);
+hljs.registerLanguage("python", python);
+hljs.registerLanguage("json", json);
+hljs.registerLanguage("xml", xml);
+hljs.registerLanguage("html", xml);
+hljs.registerLanguage("css", css);
+hljs.registerLanguage("bash", bash);
+hljs.registerLanguage("shell", bash);
+hljs.registerLanguage("markdown", markdown);
+const LANG_ALIASES: Record<string, string> = { ts: "typescript", tsx: "typescript", js: "javascript", jsx: "javascript", mjs: "javascript", py: "python", sh: "bash", zsh: "bash", yml: "yaml", htm: "html", vue: "html", svelte: "html", md: "markdown" };
+
+export function highlightCode(code: string, lang?: string): string {
+  const resolved = LANG_ALIASES[lang ?? ""] ?? lang ?? "";
+  try {
+    if (resolved && hljs.getLanguage(resolved)) return hljs.highlight(code, { language: resolved }).value;
+    return hljs.highlightAuto(code).value;
+  } catch {
+    return code.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  }
+}
+
 marked.setOptions({ gfm: true, breaks: true });
+// Syntax-highlight fenced code blocks. Message text is pre-escaped, so undo
+// that inside code before highlighting (hljs re-escapes safely).
+marked.use({
+  renderer: {
+    code({ text, lang }: { text: string; lang?: string }) {
+      const raw = text.replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
+      return `<pre><code class="hljs">${highlightCode(raw, lang)}</code></pre>`;
+    },
+  },
+});
 
 function renderMarkdown(text: string): string {
   const escaped = text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-  return marked.parse(escaped, { async: false });
+  return marked.parse(escaped, { async: false }) as string;
 }
 
 const MODE_OPTIONS: SelectOption[] = [
@@ -223,6 +264,22 @@ export function App() {
             ),
           );
           break;
+        case "writeCode":
+          setBusy(true);
+          setStatus(`Writing ${msg.path}`);
+          setItems((prev) => {
+            const idx = prev.findIndex((i) => i.kind === "write" && i.id === msg.id);
+            if (idx === -1) return [...prev, { kind: "write", id: msg.id, path: msg.path, code: msg.code, status: "streaming" }];
+            const next = [...prev];
+            next[idx] = { ...(next[idx] as Extract<UiItem, { kind: "write" }>), path: msg.path, code: msg.code };
+            return next;
+          });
+          break;
+        case "writeDone":
+          setItems((prev) =>
+            prev.map((item) => (item.kind === "write" && item.id === msg.id ? { ...item, status: msg.status } : item)),
+          );
+          break;
         case "turnDone":
           setStats(msg.stats);
           turnStart.current = 0;
@@ -304,6 +361,12 @@ export function App() {
         if (!line || line.startsWith("#")) continue;
         try {
           const url = new URL(line.trim());
+          // Web links dropped into the chat: put the URL in the message so
+          // the agent reads it with read_url.
+          if (url.protocol === "http:" || url.protocol === "https:") {
+            setInput((v) => (v ? `${v.trimEnd()} ${url.href} ` : `${url.href} `));
+            continue;
+          }
           if (url.protocol === "file:") {
             const fsPath = decodeURIComponent(url.pathname);
             const name = fsPath.split("/").pop() ?? fsPath;
@@ -441,6 +504,8 @@ export function App() {
             />
           ) : item.kind === "thinking" ? (
             <ThinkingBlock key={`th${i}`} item={item} streaming={busy && i === lastIndex} />
+          ) : item.kind === "write" ? (
+            <WriteBlock key={item.id + i} item={item} />
           ) : (
             <ToolRow key={item.id + i} item={item} />
           ),
@@ -659,6 +724,44 @@ function ThinkingBlock({ item, streaming }: { item: Extract<UiItem, { kind: "thi
       {(open || (streaming && item.seconds === 0)) && (
         <div className="thinking-body">{item.content}</div>
       )}
+    </div>
+  );
+}
+
+/** A file being written live: filename header + code streaming in below. */
+function WriteBlock({ item }: { item: Extract<UiItem, { kind: "write" }> }) {
+  const bodyRef = useRef<HTMLPreElement>(null);
+  const lastHighlight = useRef(0);
+  const [html, setHtml] = useState("");
+  const streaming = item.status === "streaming" || item.status === "running";
+
+  // Live syntax highlighting, throttled to ~4x/sec while code streams in.
+  useEffect(() => {
+    const now = Date.now();
+    if (!streaming || now - lastHighlight.current > 250 || item.code.length < 2_000) {
+      lastHighlight.current = now;
+      const ext = item.path.split(".").pop()?.toLowerCase();
+      setHtml(highlightCode(item.code, ext));
+    }
+  }, [item.code, item.path, streaming]);
+
+  // Follow the code as it streams.
+  useEffect(() => {
+    if (streaming && bodyRef.current) bodyRef.current.scrollTop = bodyRef.current.scrollHeight;
+  }, [html, streaming]);
+
+  return (
+    <div className={`write-block ${item.status}`}>
+      <div className="write-header">
+        <Icon name="pencil" size={12} />
+        <span className="write-path">{item.path}</span>
+        <span className={`tool-status ${item.status === "streaming" || item.status === "running" ? "running" : item.status}`}>
+          {streaming ? <Icon name="spinner" size={12} spin /> : item.status === "ok" ? <Icon name="check" size={12} /> : <Icon name="x" size={12} />}
+        </span>
+      </div>
+      <pre ref={bodyRef} className={`write-body${streaming ? " streaming" : ""}`}>
+        <code className="hljs" dangerouslySetInnerHTML={{ __html: html }} />
+      </pre>
     </div>
   );
 }

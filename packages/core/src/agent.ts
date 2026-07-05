@@ -29,6 +29,8 @@ export interface AgentOptions {
 export type AgentEvent =
   | { type: "text"; text: string }
   | { type: "reasoning"; text: string }
+  /** Raw tool-argument JSON streaming in — lets UIs show code being written live. */
+  | { type: "tool_args_delta"; id: string; name: string; text: string }
   | { type: "tool_start"; id: string; name: string; args: Record<string, unknown> }
   | { type: "tool_done"; id: string; name: string; result: ToolResult; approved: boolean }
   | { type: "done"; finalText: string; iterations: number; usage: Usage };
@@ -119,6 +121,8 @@ export class Agent {
             yield { type: "text", text: event.text };
           } else if (event.type === "reasoning") {
             yield { type: "reasoning", text: event.text };
+          } else if (event.type === "tool_call_delta") {
+            yield { type: "tool_args_delta", id: event.id, name: event.name, text: event.text };
           } else if (event.type === "done") {
             if (event.result.usage) {
               totalUsage.prompt_tokens += event.result.usage.prompt_tokens;

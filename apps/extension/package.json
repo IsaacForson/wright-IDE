@@ -9,8 +9,19 @@
   "engines": {
     "vscode": "^1.90.0"
   },
-  "categories": ["AI", "Chat", "Programming Languages"],
-  "keywords": ["ai", "agent", "nvidia", "nim", "copilot", "chat"],
+  "categories": [
+    "AI",
+    "Chat",
+    "Programming Languages"
+  ],
+  "keywords": [
+    "ai",
+    "agent",
+    "nvidia",
+    "nim",
+    "copilot",
+    "chat"
+  ],
   "repository": {
     "type": "git",
     "url": "https://github.com/Youngtech303/Wright.git",
@@ -148,7 +159,11 @@
         },
         "wright.webSearch.provider": {
           "type": "string",
-          "enum": ["duckduckgo", "tavily", "brave"],
+          "enum": [
+            "duckduckgo",
+            "tavily",
+            "brave"
+          ],
           "default": "duckduckgo",
           "enumDescriptions": [
             "Keyless, but only covers well-known topics (instant-answer API)",
@@ -164,7 +179,11 @@
         },
         "wright.approvalMode": {
           "type": "string",
-          "enum": ["manual", "auto-edit", "auto"],
+          "enum": [
+            "manual",
+            "auto-edit",
+            "auto"
+          ],
           "default": "auto-edit",
           "enumDescriptions": [
             "Every file edit and shell command asks for approval",
@@ -200,7 +219,9 @@
         },
         "wright.models.list": {
           "type": "array",
-          "items": { "type": "string" },
+          "items": {
+            "type": "string"
+          },
           "default": [
             "z-ai/glm-5.2",
             "mistralai/mistral-large-3-675b-instruct-2512",
@@ -216,7 +237,13 @@
         },
         "wright.defaultMode": {
           "type": "string",
-          "enum": ["agent", "plan", "debug", "ask", "multi"],
+          "enum": [
+            "agent",
+            "plan",
+            "debug",
+            "ask",
+            "multi"
+          ],
           "default": "agent",
           "description": "Mode the chat starts in."
         },
@@ -232,11 +259,25 @@
           "additionalProperties": {
             "type": "object",
             "properties": {
-              "command": { "type": "string" },
-              "args": { "type": "array", "items": { "type": "string" } },
-              "env": { "type": "object", "additionalProperties": { "type": "string" } }
+              "command": {
+                "type": "string"
+              },
+              "args": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "env": {
+                "type": "object",
+                "additionalProperties": {
+                  "type": "string"
+                }
+              }
             },
-            "required": ["command"]
+            "required": [
+              "command"
+            ]
           }
         }
       }
@@ -258,6 +299,7 @@
     "@vscode/vsce": "^3.2.0",
     "@wright/core": "workspace:*",
     "esbuild": "^0.28.0",
+    "highlight.js": "^11.11.1",
     "marked": "^15.0.0",
     "react": "^18.3.0",
     "react-dom": "^18.3.0",

@@ -96,4 +96,5 @@ export type StreamEvent =
   | { type: "text"; text: string }
   | { type: "reasoning"; text: string }
   | { type: "tool_call_start"; index: number; id: string; name: string }
+  | { type: "tool_call_delta"; index: number; id: string; name: string; text: string }
   | { type: "done"; result: ChatResult };

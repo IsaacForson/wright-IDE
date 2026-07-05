@@ -10,6 +10,7 @@ import {
   type ChatMessage,
   createBuiltinTools,
   createCodebaseSearchTool,
+  createReadUrlTool,
   createWebSearchTool,
   executionMessage,
   generatePlan,
@@ -391,8 +392,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     const indexer = await this.indexService.ensure(client, root.fsPath);
     if (indexer) tools.push(createCodebaseSearchTool(indexer));
     tools.push(createWebSearchTool(config.webSearch));
+    tools.push(createReadUrlTool());
     if (mode === "ask") {
-      const readOnly = new Set(["read_file", "list_dir", "search", "codebase_search", "web_search"]);
+      const readOnly = new Set(["read_file", "list_dir", "search", "codebase_search", "web_search", "read_url"]);
       tools = tools.filter((t) => readOnly.has(t.definition.function.name));
     }
     const rules = await loadRulesFile(root.fsPath);
@@ -553,6 +555,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     let currentText: Extract<UiItem, { kind: "text" }> | undefined;
     let currentThinking: Extract<UiItem, { kind: "thinking" }> | undefined;
     let thinkingStart = 0;
+    /** Live file-writes: raw streaming args + their transcript items, by call id. */
+    const writes = new Map<string, { raw: string; item: Extract<UiItem, { kind: "write" }> }>();
     const endThinking = () => {
       if (!currentThinking) return;
       currentThinking.seconds = Math.round((Date.now() - thinkingStart) / 1000);
@@ -583,9 +587,40 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             currentText.content += event.text;
             this.post({ type: "delta", text: event.text });
             break;
+          case "tool_args_delta": {
+            // Show write_file/edit_file code as it streams in.
+            if (event.name !== "write_file" && event.name !== "edit_file") break;
+            endThinking();
+            currentText = undefined;
+            let write = writes.get(event.id);
+            if (!write) {
+              write = { raw: "", item: { kind: "write", id: event.id, path: "…", code: "", status: "streaming" } };
+              writes.set(event.id, write);
+              this.items.push(write.item);
+            }
+            write.raw += event.text;
+            const { path, code } = extractStreamingWrite(write.raw, event.name);
+            if (path) write.item.path = path;
+            if (code !== undefined && code.length > write.item.code.length) {
+              write.item.code = code;
+              this.post({ type: "writeCode", id: event.id, path: write.item.path, code });
+            }
+            break;
+          }
           case "tool_start": {
             endThinking();
             currentText = undefined;
+            const write = writes.get(event.id);
+            if (write) {
+              // Already rendered as a live write block; just mark it executing.
+              write.item.status = "running";
+              const content = (event.args.content ?? event.args.new_string) as string | undefined;
+              if (typeof content === "string" && content.length > write.item.code.length) {
+                write.item.code = content;
+                this.post({ type: "writeCode", id: event.id, path: write.item.path, code: content });
+              }
+              break;
+            }
             const argsSummary = summarizeArgs(event.name, event.args);
             this.items.push({ kind: "tool", id: event.id, name: event.name, argsSummary, status: "running" });
             this.post({ type: "toolStart", id: event.id, name: event.name, argsSummary });
@@ -593,12 +628,18 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           }
           case "tool_done": {
             const status = !event.approved ? "declined" : event.result.ok ? "ok" : "error";
-            const item = this.items.find((i) => i.kind === "tool" && i.id === event.id);
-            if (item?.kind === "tool") {
-              item.status = status;
-              item.output = event.result.output;
+            const write = writes.get(event.id);
+            if (write) {
+              write.item.status = status;
+              this.post({ type: "writeDone", id: event.id, status });
+            } else {
+              const item = this.items.find((i) => i.kind === "tool" && i.id === event.id);
+              if (item?.kind === "tool") {
+                item.status = status;
+                item.output = event.result.output;
+              }
+              this.post({ type: "toolDone", id: event.id, status, output: event.result.output });
             }
-            this.post({ type: "toolDone", id: event.id, status, output: event.result.output });
             if (event.name === "write_file" || event.name === "edit_file") this.sendChanges();
             break;
           }
@@ -718,5 +759,36 @@ function summarizeArgs(name: string, args: Record<string, unknown>): string {
       const json = JSON.stringify(args);
       return json.length > 80 ? json.slice(0, 80) + "…" : json;
     }
+  }
+}
+
+/**
+ * Pull the file path and the (still-streaming) code out of a partial
+ * tool-arguments JSON string like `{"path":"src/a.ts","content":"import …`.
+ * The code value may be cut mid-escape; trim until it decodes.
+ */
+export function extractStreamingWrite(raw: string, toolName: string): { path?: string; code?: string } {
+  const pathMatch = raw.match(/"path"\s*:\s*"((?:[^"\\]|\\.)*)"/);
+  const path = pathMatch ? safeDecode(pathMatch[1]!) : undefined;
+
+  const codeKey = toolName === "write_file" ? "content" : "new_string";
+  const keyMatch = raw.match(new RegExp(`"${codeKey}"\\s*:\\s*"`));
+  if (!keyMatch || keyMatch.index === undefined) return { path };
+
+  let fragment = raw.slice(keyMatch.index + keyMatch[0].length);
+  // If the closing quote of the value has arrived, stop there.
+  const end = fragment.match(/(?:^|[^\\])(?:\\\\)*"/);
+  if (end && end.index !== undefined) fragment = fragment.slice(0, end.index + end[0].length - 1);
+  // Drop a trailing partial escape sequence (lone backslash or cut \uXXXX).
+  fragment = fragment.replace(/\\(u[0-9a-fA-F]{0,3})?$/, "");
+  const code = safeDecode(fragment);
+  return { path, code };
+}
+
+function safeDecode(escaped: string): string | undefined {
+  try {
+    return JSON.parse(`"${escaped}"`) as string;
+  } catch {
+    return undefined;
   }
 }

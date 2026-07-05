@@ -171,9 +171,15 @@ export class ModelClient {
           };
           toolCalls.set(tc.index, call);
           yield { type: "tool_call_start", index: tc.index, id: call.id, name: call.function.name };
+          if (call.function.arguments) {
+            yield { type: "tool_call_delta", index: tc.index, id: call.id, name: call.function.name, text: call.function.arguments };
+          }
         } else {
           if (tc.function?.name) existing.function.name += tc.function.name;
-          if (tc.function?.arguments) existing.function.arguments += tc.function.arguments;
+          if (tc.function?.arguments) {
+            existing.function.arguments += tc.function.arguments;
+            yield { type: "tool_call_delta", index: tc.index, id: existing.id, name: existing.function.name, text: tc.function.arguments };
+          }
         }
       }
     }

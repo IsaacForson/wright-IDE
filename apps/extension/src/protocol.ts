@@ -45,7 +45,9 @@ export interface FileChangeItem {
 export type UiItem =
   | { kind: "text"; role: "user" | "assistant"; content: string; images?: string[]; files?: string[] }
   | { kind: "thinking"; content: string; seconds: number }
-  | { kind: "tool"; id: string; name: string; argsSummary: string; status: "running" | "ok" | "error" | "declined"; output?: string };
+  | { kind: "tool"; id: string; name: string; argsSummary: string; status: "running" | "ok" | "error" | "declined"; output?: string }
+  /** A file being written live — code streams in as the model generates it. */
+  | { kind: "write"; id: string; path: string; code: string; status: "streaming" | "running" | "ok" | "error" | "declined" };
 
 /** Extension → webview */
 export type HostToWebview =
@@ -70,6 +72,8 @@ export type HostToWebview =
   | { type: "thinkingDone"; seconds: number }
   | { type: "toolStart"; id: string; name: string; argsSummary: string }
   | { type: "toolDone"; id: string; status: "ok" | "error" | "declined"; output: string }
+  | { type: "writeCode"; id: string; path: string; code: string }
+  | { type: "writeDone"; id: string; status: "ok" | "error" | "declined" }
   | { type: "changes"; changes: FileChangeItem[] }
   | { type: "fileList"; token: number; entries: Array<{ path: string; type: "file" | "dir" }> }
   | { type: "turnDone"; stats?: string }
