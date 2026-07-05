@@ -23,6 +23,12 @@ import { createDiagnosticsTool } from "./diagnosticsTool.js";
 import { TerminalHost } from "./terminalHost.js";
 import { DEFAULT_MODEL_LIST, getConfig } from "./config.js";
 import { getActiveFile, workspaceRoot } from "./workspace.js";
+import * as os from "node:os";
+
+const NO_WORKSPACE_NOTE = `
+
+# No workspace folder is open
+You are rooted at the user's HOME directory (~); all paths are relative to it. You can read/explore anything under it and create brand-new projects: ask where the project should live if the user didn't say (e.g. ~/Desktop or ~/Projects), create the folder with your tools, scaffold inside it, and when done tell the user to open it via File → Open Folder for the full experience (indexing, rules, diagnostics).`;
 import type { ChatMode, FileAttachment, HostToWebview, ResearchMode, UiItem, WebviewToHost } from "./protocol.js";
 import type { AgentMode } from "@wright/core";
 
@@ -62,6 +68,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private agentBuiltFor: { model: string; mode: AgentMode; research: ResearchMode } | undefined;
   /** Cached workspace file list for the @-mention picker. */
   private fileListCache: { entries: Array<{ path: string; type: "file" | "dir" }>; at: number } | undefined;
+  /** Where the tracker/tools are rooted: the workspace, or ~ when none is open. */
+  private rootPath: string | undefined;
   /** A big-looking agent task parked while the user decides Plan vs Agent. */
   private pendingSuggest: { text: string; images?: string[]; files?: FileAttachment[]; research: ResearchMode } | undefined;
 
@@ -322,10 +330,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         return;
       }
       case "openFile": {
-        const root = workspaceRoot();
-        if (!root) return;
+        const base = workspaceRoot()?.fsPath ?? this.rootPath ?? os.homedir();
         try {
-          await vscode.window.showTextDocument(vscode.Uri.joinPath(root, msg.path), { preview: true });
+          await vscode.window.showTextDocument(vscode.Uri.joinPath(vscode.Uri.file(base), msg.path), { preview: true });
         } catch {
           vscode.window.showWarningMessage(`Wright: could not open ${msg.path}`);
         }
@@ -463,11 +470,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   private async openDiff(relPath: string): Promise<void> {
-    const root = workspaceRoot();
-    if (!root || !this.tracker) return;
+    if (!this.rootPath || !this.tracker) return;
     const kind = this.tracker.snapshot(relPath) === null ? "created" : "edited";
     const original = vscode.Uri.from({ scheme: ORIGINAL_SCHEME, path: `/${relPath}` });
-    const current = vscode.Uri.joinPath(root, relPath);
+    const current = vscode.Uri.joinPath(vscode.Uri.file(this.rootPath), relPath);
     await vscode.commands.executeCommand(
       "vscode.diff",
       original,
@@ -501,9 +507,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
    */
   private async applyCodeToActiveFile(code: string): Promise<void> {
     const config = getConfig();
-    const root = workspaceRoot();
+    const base = workspaceRoot()?.fsPath ?? this.rootPath ?? os.homedir();
     const info = getActiveFile();
-    if (!root || !info) {
+    if (!info) {
       vscode.window.showInformationMessage("Wright: open the file you want to apply the code to first.");
       return;
     }
@@ -512,7 +518,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       vscode.window.showWarningMessage("Wright: file too large for Apply — ask the agent to edit it instead.");
       return;
     }
-    this.tracker ??= new TrackedHost(new NodeWorkspaceHost(root.fsPath));
+    this.tracker ??= new TrackedHost(new NodeWorkspaceHost(base));
+    this.rootPath ??= base;
     await vscode.window.withProgress(
       { location: vscode.ProgressLocation.Notification, title: `Wright: applying to ${info.path}…` },
       async () => {
@@ -627,15 +634,17 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
   private async buildAgent(apiKey: string, model: string, mode: AgentMode, research: ResearchMode): Promise<Agent> {
     const root = workspaceRoot();
-    if (!root) throw new Error("Open a folder first — Wright's agent needs a workspace to work in.");
+    // No folder open? Root the agent at the home directory so it can still
+    // read the filesystem and scaffold brand-new projects anywhere under ~.
+    this.rootPath = root?.fsPath ?? os.homedir();
     const config = getConfig();
     const client = new ModelClient(
       nvidiaProvider({ apiKey, chatModel: model, fastModel: config.fastModel }),
     );
-    this.tracker ??= new TrackedHost(new NodeWorkspaceHost(root.fsPath));
+    this.tracker ??= new TrackedHost(new NodeWorkspaceHost(this.rootPath));
     // Commands run in a visible "Wright" terminal; edits still go through the tracker.
-    let tools = createBuiltinTools(new TerminalHost(this.tracker, root.fsPath));
-    const indexer = await this.indexService.ensure(client, root.fsPath);
+    let tools = createBuiltinTools(new TerminalHost(this.tracker, this.rootPath));
+    const indexer = root ? await this.indexService.ensure(client, root.fsPath) : undefined;
     if (indexer) tools.push(createCodebaseSearchTool(indexer));
     tools.push(createWebSearchTool(config.webSearch));
     tools.push(createReadUrlTool());
@@ -644,7 +653,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       const readOnly = new Set(["read_file", "list_dir", "search", "codebase_search", "web_search", "read_url", "get_diagnostics"]);
       tools = tools.filter((t) => readOnly.has(t.definition.function.name));
     }
-    const rules = await loadRulesFile(root.fsPath);
+    const rules = root ? await loadRulesFile(root.fsPath) : undefined;
 
     // MCP tool servers (Phase 11), from wright.mcp.servers.
     if (!this.mcpAttempted) {
@@ -667,7 +676,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       tools,
       // Deep research fans out into many search rounds; give it headroom.
       maxIterations: research === "deep" ? 60 : research === "research" ? 40 : 25,
-      systemPrompt: agentSystemPrompt({ workspaceName: vscode.workspace.name, rules, mode, research }),
+      systemPrompt:
+        agentSystemPrompt({ workspaceName: vscode.workspace.name, rules, mode, research }) +
+        (root ? "" : NO_WORKSPACE_NOTE),
       approve: async (name, args) => {
         const decision = new ApprovalPolicy({ mode: this.approvalMode }).decide(name, args);
         if (decision.action === "allow") return true;
@@ -697,11 +708,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       this.post({ type: "error", message: "No NVIDIA API key found. Set `wright.nvidia.apiKey` in Settings." });
       return;
     }
-    const root = workspaceRoot();
-    if (!root) {
-      this.post({ type: "error", message: "Open a folder first — the composer needs a workspace." });
-      return;
-    }
+    const root = workspaceRoot(); // optional: without one we just plan without codebase context
 
     const priorPlan = feedback ? this.pendingPlan?.plan : undefined;
     this.pendingPlan = undefined;
@@ -716,7 +723,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this.post({ type: "assistantStart" });
 
     try {
-      const indexer = await this.indexService.ensure(client, root.fsPath);
+      const indexer = root ? await this.indexService.ensure(client, root.fsPath) : undefined;
       const context = indexer ? await planContext(indexer, task, this.abort.signal) : undefined;
       const plan = await generatePlan(
         client,

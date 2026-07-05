@@ -191,6 +191,8 @@ export function App() {
   const turnStart = useRef(0);
   /** Apply the configured default mode once, without clobbering user changes. */
   const defaultModeApplied = useRef(false);
+  /** Latest wright.defaultMode from settings — re-applied on every New Chat. */
+  const lastDefaultMode = useRef<ChatMode>("agent");
 
   // Elapsed-seconds ticker for the status line.
   useEffect(() => {
@@ -213,6 +215,7 @@ export function App() {
           setPlanPending(msg.planPending);
           setApprovalMode(msg.approvalMode);
           setSessionStats(msg.sessionStats);
+          lastDefaultMode.current = msg.defaultMode;
           if (!defaultModeApplied.current) {
             defaultModeApplied.current = true;
             setMode(msg.defaultMode);
@@ -513,7 +516,15 @@ export function App() {
       <div className="chat-header">
         <span className="chat-header-title">Wright</span>
         <div className="spacer" />
-        <IconButton icon="plus" title="New chat" onClick={() => { setSessions(undefined); post({ type: "newChat" }); }} />
+        <IconButton
+          icon="plus"
+          title="New chat"
+          onClick={() => {
+            setSessions(undefined);
+            setMode(lastDefaultMode.current); // fresh chat starts in the configured default mode
+            post({ type: "newChat" });
+          }}
+        />
         <IconButton
           icon="history"
           title="Chat history"
