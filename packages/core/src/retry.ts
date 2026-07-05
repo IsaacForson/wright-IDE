@@ -6,6 +6,9 @@ export interface RetryOptions {
   maxDelayMs?: number;
   signal?: AbortSignal;
   onRetry?: (err: ModelError, attempt: number, delayMs: number) => void;
+  /** When true, rate_limit errors are thrown immediately instead of retried
+   *  (lets a caller rotate to a different API key rather than wait). */
+  noRateLimitRetry?: boolean;
 }
 
 /**
@@ -25,6 +28,7 @@ export async function withRetry<T>(fn: () => Promise<T>, opts: RetryOptions = {}
     } catch (err) {
       lastErr = err;
       const modelErr = err instanceof ModelError ? err : undefined;
+      if (opts.noRateLimitRetry && modelErr?.kind === "rate_limit") throw err;
       const canRetry = modelErr?.retryable && attempt < maxAttempts && !opts.signal?.aborted;
       if (!canRetry) throw err;
 

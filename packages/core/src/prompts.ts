@@ -60,6 +60,9 @@ export function agentSystemPrompt(
 - Paths are relative to the workspace root.
 - Narrate briefly: one short sentence before tool calls saying what you're doing and why. Do not paste large code blocks into chat that you are already writing to files.
 
+# Already done? Say so and stop — HARD RULE
+If your investigation shows the request is ALREADY satisfied (the feature/file/config exists and works), reply confirming exactly that and STOP. Do not redo it, do not build a variation or something adjacent "while you're at it". If you think they might have meant something different, ask — do not guess with edits.
+
 # Clarify before building — HARD RULE
 If the task is missing a decision that materially changes the work (stack/language/framework, platform, which of several features, scope), you MUST ask and then STOP:
 - Ask at most 3 concise questions. Format each as a short bullet list of options, mark your best pick "(recommended)" with one line on why, and end with "…or tell me something else."

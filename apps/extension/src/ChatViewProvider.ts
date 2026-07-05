@@ -2,7 +2,10 @@ import * as vscode from "vscode";
 import {
   Agent,
   ApprovalPolicy,
+  FailoverModelClient,
   ModelClient,
+  openAICompatibleProvider,
+  type FailoverTarget,
   ModelError,
   TrackedHost,
   agentSystemPrompt,
@@ -24,13 +27,13 @@ import { TerminalHost } from "./terminalHost.js";
 import { DEFAULT_MODEL_LIST, getConfig } from "./config.js";
 import { getActiveFile, workspaceRoot } from "./workspace.js";
 import * as os from "node:os";
+import type { ChatMode, FileAttachment, HostToWebview, ResearchMode, UiItem, WebviewToHost } from "./protocol.js";
+import type { AgentMode } from "@wright/core";
 
 const NO_WORKSPACE_NOTE = `
 
 # No workspace folder is open
 You are rooted at the user's HOME directory (~); all paths are relative to it. You can read/explore anything under it and create brand-new projects: ask where the project should live if the user didn't say (e.g. ~/Desktop or ~/Projects), create the folder with your tools, scaffold inside it, and when done tell the user to open it via File → Open Folder for the full experience (indexing, rules, diagnostics).`;
-import type { ChatMode, FileAttachment, HostToWebview, ResearchMode, UiItem, WebviewToHost } from "./protocol.js";
-import type { AgentMode } from "@wright/core";
 
 /** Virtual document scheme serving pre-edit snapshots for the diff editor. */
 export const ORIGINAL_SCHEME = "wright-original";
@@ -523,7 +526,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     await vscode.window.withProgress(
       { location: vscode.ProgressLocation.Notification, title: `Wright: applying to ${info.path}…` },
       async () => {
-        const client = new ModelClient(nvidiaProvider({ apiKey: config.apiKey!, chatModel: config.fastModel }));
+        const client = new ModelClient(nvidiaProvider({ apiKeys: config.apiKeys, chatModel: config.fastModel }));
         const result = await client.complete({
           model: config.fastModel,
           messages: [
@@ -566,7 +569,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     const config = getConfig();
     if (!config.apiKey) return false;
     try {
-      const client = new ModelClient(nvidiaProvider({ apiKey: config.apiKey, chatModel: config.fastModel }));
+      const client = new ModelClient(nvidiaProvider({ apiKeys: config.apiKeys, chatModel: config.fastModel }));
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), 4_000);
       const result = await client.complete(
@@ -638,8 +641,29 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     // read the filesystem and scaffold brand-new projects anywhere under ~.
     this.rootPath = root?.fsPath ?? os.homedir();
     const config = getConfig();
-    const client = new ModelClient(
-      nvidiaProvider({ apiKey, chatModel: model, fastModel: config.fastModel }),
+    const wcfg = vscode.workspace.getConfiguration("wright");
+    // Failover chain: NVIDIA (key pool) → user's extra providers → local Ollama.
+    const targets: FailoverTarget[] = [
+      { name: "nvidia", client: new ModelClient(nvidiaProvider({ apiKeys: config.apiKeys, chatModel: model, fastModel: config.fastModel })) },
+    ];
+    for (const p of wcfg.get<Array<{ name: string; baseUrl: string; apiKey?: string; model: string }>>("fallback.providers") ?? []) {
+      if (!p?.baseUrl || !p.model) continue;
+      targets.push({
+        name: p.name || p.baseUrl,
+        model: p.model,
+        client: new ModelClient(openAICompatibleProvider({ id: p.name || "custom", name: p.name || "custom", baseUrl: p.baseUrl, apiKey: p.apiKey, chatModel: p.model })),
+      });
+    }
+    if (wcfg.get<boolean>("fallback.ollama") ?? true) {
+      const ollamaModel = wcfg.get<string>("fallback.ollamaModel") || "qwen-coder-7b:latest";
+      targets.push({
+        name: "ollama (local)",
+        model: ollamaModel,
+        client: new ModelClient(openAICompatibleProvider({ id: "ollama", name: "Ollama", baseUrl: "http://localhost:11434/v1", chatModel: ollamaModel })),
+      });
+    }
+    const client = new FailoverModelClient(targets, (from, to) =>
+      vscode.window.setStatusBarMessage(`Wright: ${from} unavailable → switched to ${to}`, 6_000),
     );
     this.tracker ??= new TrackedHost(new NodeWorkspaceHost(this.rootPath));
     // Commands run in a visible "Wright" terminal; edits still go through the tracker.
@@ -716,7 +740,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this.sendState(true);
 
     const planModel = this.model === "auto" ? config.chatModel : this.model;
-    const client = new ModelClient(nvidiaProvider({ apiKey: config.apiKey, chatModel: planModel }));
+    const client = new ModelClient(nvidiaProvider({ apiKeys: config.apiKeys, chatModel: planModel }));
     this.abort = new AbortController();
     const planItem: Extract<UiItem, { kind: "text" }> = { kind: "text", role: "assistant", content: "" };
     this.items.push(planItem);

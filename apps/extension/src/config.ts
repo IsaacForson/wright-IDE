@@ -6,6 +6,8 @@ import type { ApprovalMode } from "@wright/core";
 
 export interface WrightConfig {
   apiKey: string | undefined;
+  /** Full key pool for automatic rotation on rate limits. */
+  apiKeys: string[];
   chatModel: string;
   fastModel: string;
   embedModel: string;
@@ -43,8 +45,19 @@ export const DEFAULT_MODEL_LIST = [
 export function getConfig(): WrightConfig {
   const cfg = vscode.workspace.getConfiguration("wright");
   const settingKey = cfg.get<string>("nvidia.apiKey")?.trim();
+  const settingKeys = (cfg.get<string[]>("nvidia.apiKeys") ?? []).map((k) => k.trim()).filter(Boolean);
+  const envKeys = (process.env.NVIDIA_API_KEYS ?? "").split(",").map((k) => k.trim()).filter(Boolean);
+  // Pool: single key + array setting + comma-env + .env fallback, de-duplicated.
+  const pool = [
+    ...(settingKey ? [settingKey] : []),
+    ...settingKeys,
+    ...envKeys,
+    ...(process.env.NVIDIA_API_KEY ? [process.env.NVIDIA_API_KEY] : []),
+    ...(readWorkspaceDotEnv("NVIDIA_API_KEY") ? [readWorkspaceDotEnv("NVIDIA_API_KEY")!] : []),
+  ].filter((k, i, a) => k && a.indexOf(k) === i);
   return {
-    apiKey: settingKey || process.env.NVIDIA_API_KEY || readWorkspaceDotEnv("NVIDIA_API_KEY"),
+    apiKey: pool[0],
+    apiKeys: pool,
     chatModel: cfg.get<string>("model.chat") || "z-ai/glm-5.2",
     fastModel: cfg.get<string>("model.fast") || "meta/llama-3.1-8b-instruct",
     embedModel: cfg.get<string>("model.embed") || "nvidia/nv-embedcode-7b-v1",

@@ -75,7 +75,7 @@ export async function inlineEdit(): Promise<void> {
   ].join("\n");
 
   const client = new ModelClient(
-    nvidiaProvider({ apiKey: config.apiKey, chatModel: config.fastModel }),
+    nvidiaProvider({ apiKeys: config.apiKeys, chatModel: config.fastModel }),
   );
 
   const result = await vscode.window.withProgress(

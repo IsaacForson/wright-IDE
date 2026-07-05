@@ -13,6 +13,7 @@ export * from "./composer.js";
 export * from "./policy.js";
 export * from "./websearch.js";
 export * from "./readurl.js";
+export * from "./failover.js";
 export * from "./rag/chunker.js";
 export * from "./rag/store.js";
 export * from "./rag/tool.js";

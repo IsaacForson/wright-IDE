@@ -224,28 +224,65 @@ export class ModelClient {
     throw new ModelError("server", "Stream ended without a done event");
   }
 
+  /** Index into the key pool; persists so we stay on a working key. */
+  private keyIndex = 0;
+
   private async fetch(path: string, init: RequestInit, opts: RequestOptions): Promise<Response> {
     const url = `${this.provider.baseUrl}${path}`;
-    const headers: Record<string, string> = { "Content-Type": "application/json" };
-    if (this.provider.apiKey) headers["Authorization"] = `Bearer ${this.provider.apiKey}`;
+    const keys = this.provider.apiKeys?.length
+      ? this.provider.apiKeys
+      : this.provider.apiKey
+        ? [this.provider.apiKey]
+        : [undefined];
 
-    return withRetry(
-      async () => {
-        let res: Response;
-        try {
-          res = await fetch(url, { ...init, headers, signal: opts.signal });
-        } catch (err) {
-          if (opts.signal?.aborted) throw new ModelError("aborted", "Request cancelled");
-          throw new ModelError("network", `Could not reach ${this.provider.name} at ${url}`, { cause: err });
+    const doFetch = (key: string | undefined, noRateLimitRetry: boolean) => {
+      const headers: Record<string, string> = { "Content-Type": "application/json" };
+      if (key) headers["Authorization"] = `Bearer ${key}`;
+      return withRetry(
+        async () => {
+          let res: Response;
+          try {
+            res = await fetch(url, { ...init, headers, signal: opts.signal });
+          } catch (err) {
+            if (opts.signal?.aborted) throw new ModelError("aborted", "Request cancelled");
+            throw new ModelError("network", `Could not reach ${this.provider.name} at ${url}`, { cause: err });
+          }
+          if (!res.ok) {
+            const body = await res.text().catch(() => "");
+            throw errorFromResponse(res.status, body, res.headers.get("retry-after"));
+          }
+          return res;
+        },
+        { ...opts.retry, signal: opts.signal, noRateLimitRetry },
+      );
+    };
+
+    // Single key: normal behavior. Multiple keys: on rate_limit/auth, rotate
+    // to the next key immediately and try it, cycling through all of them.
+    if (keys.length <= 1) return doFetch(keys[0], false);
+
+    let lastErr: unknown;
+    for (let tried = 0; tried < keys.length; tried++) {
+      const key = keys[this.keyIndex % keys.length];
+      try {
+        return await doFetch(key, true);
+      } catch (err) {
+        lastErr = err;
+        const kind = err instanceof ModelError ? err.kind : undefined;
+        if ((kind === "rate_limit" || kind === "auth") && !opts.signal?.aborted) {
+          this.keyIndex++; // advance for this loop and future calls
+          this.provider.apiKeys && opts.retry?.onRetry?.(err as ModelError, tried + 1, 0);
+          continue;
         }
-        if (!res.ok) {
-          const body = await res.text().catch(() => "");
-          throw errorFromResponse(res.status, body, res.headers.get("retry-after"));
-        }
-        return res;
-      },
-      { ...opts.retry, signal: opts.signal },
-    );
+        throw err;
+      }
+    }
+    // Every key is rate-limited. If the caller can fail over to another
+    // provider, throw; otherwise fall back to waiting on the current key.
+    if (lastErr instanceof ModelError && lastErr.kind === "rate_limit" && !opts.retry?.noRateLimitRetry) {
+      return doFetch(keys[this.keyIndex % keys.length], false);
+    }
+    throw lastErr;
   }
 }
 

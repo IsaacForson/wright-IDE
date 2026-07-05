@@ -12,6 +12,8 @@ export interface ProviderConfig {
   /** OpenAI-compatible base URL, no trailing slash, e.g. https://integrate.api.nvidia.com/v1 */
   baseUrl: string;
   apiKey?: string;
+  /** Optional key pool; the client rotates to the next on rate-limit/auth. */
+  apiKeys?: string[];
   /** Whether the provider's models support tool/function calling. */
   supportsTools: boolean;
   /** Whether the provider exposes fill-in-middle (needed for autocomplete). */
@@ -26,15 +28,18 @@ export interface ProviderConfig {
 }
 
 export function nvidiaProvider(opts: {
-  apiKey: string;
+  apiKey?: string;
+  apiKeys?: string[];
   chatModel: string;
   fastModel?: string;
 }): ProviderConfig {
+  const keys = (opts.apiKeys?.length ? opts.apiKeys : opts.apiKey ? [opts.apiKey] : []).filter(Boolean);
   return {
     id: "nvidia",
     name: "NVIDIA NIM",
     baseUrl: "https://integrate.api.nvidia.com/v1",
-    apiKey: opts.apiKey,
+    apiKey: keys[0],
+    apiKeys: keys,
     supportsTools: true,
     supportsFim: false,
     models: {

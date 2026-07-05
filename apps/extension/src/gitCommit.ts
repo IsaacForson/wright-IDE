@@ -35,7 +35,7 @@ export async function generateCommitMessage(): Promise<void> {
     return;
   }
 
-  const client = new ModelClient(nvidiaProvider({ apiKey: config.apiKey, chatModel: config.fastModel }));
+  const client = new ModelClient(nvidiaProvider({ apiKeys: config.apiKeys, chatModel: config.fastModel }));
   const message = await vscode.window.withProgress(
     { location: vscode.ProgressLocation.SourceControl, title: "Wright: writing commit message…" },
     async () => {

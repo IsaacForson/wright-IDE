@@ -127,6 +127,30 @@ function activityLabel(name: string, args: string): string {
   }
 }
 
+/**
+ * Extract selectable options from an assistant question. Matches markdown
+ * bullets like "- **Bookmarks** — a tab showing…", returning a short label
+ * and the full option text to send. Only kicks in when the message reads
+ * like a question (ends with "?", or offers a "recommended" pick).
+ */
+function extractOptions(text: string): Array<{ label: string; value: string }> {
+  if (!/\?|recommended|or tell me/i.test(text)) return [];
+  const opts: Array<{ label: string; value: string }> = [];
+  for (const line of text.split("\n")) {
+    const m = line.match(/^\s*(?:[-*•]|\d+\.)\s+(.*)$/);
+    if (!m) continue;
+    const body = m[1]!.trim();
+    if (!body || body.length > 160) continue;
+    if (body.endsWith("?")) continue; // a numbered question header, not an option
+    // Prefer the bolded lead ("**Bookmarks**") as the chip label.
+    const bold = body.match(/\*\*(.+?)\*\*/);
+    const label = (bold ? bold[1]! : body.replace(/[*`]/g, "").split(/[—:\-–(]/)[0]!).trim().slice(0, 40);
+    const value = body.replace(/\*\*/g, "").replace(/`/g, "");
+    if (label) opts.push({ label, value });
+  }
+  return opts.length >= 2 && opts.length <= 8 ? opts : [];
+}
+
 function relativeTime(ts: number): string {
   const mins = Math.round((Date.now() - ts) / 60_000);
   if (mins < 1) return "just now";
@@ -457,6 +481,19 @@ export function App() {
     post({ type: "send", text, mode, research, images: images.length ? images : undefined, files: files.length ? files : undefined });
   };
 
+  /** Send a specific string as the user's next message (used by option chips). */
+  const sendValue = (value: string) => {
+    if (busy) return;
+    setError(undefined);
+    setStats(undefined);
+    setStatus("Thinking");
+    turnStart.current = Date.now();
+    setElapsed(0);
+    if (planPending) setPlanPending(false);
+    setItems((prev) => [...prev, { kind: "text", role: "user", content: value }]);
+    post({ type: "send", text: value, mode, research });
+  };
+
   const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (mention && mention.entries.length > 0) {
       if (e.key === "ArrowDown") {
@@ -576,6 +613,9 @@ export function App() {
         )}
         {items.map((item, i) =>
           item.kind === "text" ? (
+            !busy && i === lastIndex && item.role === "assistant" && extractOptions(item.content).length > 0 ? (
+              <QuestionMessage key={i} content={item.content} onAnswer={sendValue} />
+            ) : (
             <TextMessage
               key={i}
               role={item.role}
@@ -584,6 +624,7 @@ export function App() {
               images={item.images}
               files={item.files}
             />
+            )
           ) : item.kind === "thinking" ? (
             <ThinkingBlock key={`th${i}`} item={item} streaming={busy && i === lastIndex} />
           ) : item.kind === "write" ? (
@@ -600,7 +641,14 @@ export function App() {
           </div>
         )}
         {!busy && stats && <div className="turn-stats">{stats}</div>}
-        {error && <div className="error-banner"><Icon name="x" size={13} />{error}</div>}
+        {error && (
+          <div className="error-banner">
+            <span className="error-text">{error}</span>
+            <button className="icon-button error-close" title="Dismiss" onClick={() => setError(undefined)}>
+              <Icon name="x" size={12} />
+            </button>
+          </div>
+        )}
       </div>
 
       {changes.length > 0 && <ChangesPanel changes={changes} fileHunks={fileHunks} onCollapse={() => setFileHunks(undefined)} />}
@@ -777,6 +825,53 @@ export function App() {
           </div>
         </div>
         {sessionStats && <div className="session-stats">{sessionStats}</div>}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * An assistant question rendered Cursor-style: the option bullets ARE the
+ * selectable buttons, and the free-form fallback is an inline input whose
+ * placeholder is "…or tell me something else."
+ */
+function QuestionMessage({ content, onAnswer }: { content: string; onAnswer: (value: string) => void }) {
+  const [custom, setCustom] = useState("");
+  const options = extractOptions(content);
+  // Strip the option bullets and the "or tell me" line from the prose.
+  const prose = content
+    .split("\n")
+    .filter((line) => {
+      if (/or tell me/i.test(line)) return false;
+      const m = line.match(/^\s*(?:[-*•]|\d+\.)\s+(.*)$/);
+      return !(m && !m[1]!.trim().endsWith("?") && m[1]!.trim().length <= 160);
+    })
+    .join("\n");
+  return (
+    <div className="message assistant">
+      <div className="message-body" dangerouslySetInnerHTML={{ __html: renderMarkdown(prose) }} />
+      <div className="question-options">
+        {options.map((o, i) => {
+          const recommended = /recommended/i.test(o.value);
+          return (
+            <button key={i} className={`question-option${recommended ? " recommended" : ""}`} onClick={() => onAnswer(o.value)}>
+              <span className="question-option-text" dangerouslySetInnerHTML={{ __html: renderMarkdown(o.value).replace(/^<p>|<\/p>\s*$/g, "") }} />
+              {recommended && <span className="question-badge">recommended</span>}
+            </button>
+          );
+        })}
+        <input
+          className="question-input"
+          placeholder="…or tell me something else."
+          value={custom}
+          onChange={(e) => setCustom(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && custom.trim()) {
+              onAnswer(custom.trim());
+              setCustom("");
+            }
+          }}
+        />
       </div>
     </div>
   );

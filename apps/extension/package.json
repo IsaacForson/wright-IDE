@@ -137,6 +137,51 @@
           "default": "",
           "markdownDescription": "NVIDIA NIM API key from [build.nvidia.com](https://build.nvidia.com). If empty, Wright falls back to the `NVIDIA_API_KEY` env var, then to a `.env` file at the workspace root."
         },
+        "wright.nvidia.apiKeys": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "markdownDescription": "Additional NVIDIA API keys for automatic rotation. When a request hits a rate limit (429), Wright switches to the next key automatically. Add several free-tier keys here to raise effective throughput."
+        },
+        "wright.fallback.ollama": {
+          "type": "boolean",
+          "default": true,
+          "description": "When every NVIDIA key is rate-limited, fall back to your local Ollama (free forever, no limits)."
+        },
+        "wright.fallback.ollamaModel": {
+          "type": "string",
+          "default": "qwen-coder-7b:latest",
+          "description": "Ollama model used for the local fallback (must support tool calling for agent work)."
+        },
+        "wright.fallback.providers": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "baseUrl": {
+                "type": "string"
+              },
+              "apiKey": {
+                "type": "string"
+              },
+              "model": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "name",
+              "baseUrl",
+              "model"
+            ]
+          },
+          "markdownDescription": "Extra OpenAI-compatible fallback providers, tried in order after NVIDIA (before Ollama). Examples \u2014 Groq: `{\"name\":\"groq\",\"baseUrl\":\"https://api.groq.com/openai/v1\",\"apiKey\":\"gsk_\u2026\",\"model\":\"llama-3.3-70b-versatile\"}` \u00b7 Gemini free tier: `{\"name\":\"gemini\",\"baseUrl\":\"https://generativelanguage.googleapis.com/v1beta/openai\",\"apiKey\":\"AIza\u2026\",\"model\":\"gemini-2.0-flash\"}` \u00b7 Cerebras: `{\"name\":\"cerebras\",\"baseUrl\":\"https://api.cerebras.ai/v1\",\"apiKey\":\"csk-\u2026\",\"model\":\"llama-3.3-70b\"}`"
+        },
         "wright.model.chat": {
           "type": "string",
           "default": "z-ai/glm-5.2",
