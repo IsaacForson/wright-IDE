@@ -31,6 +31,8 @@ export function App() {
   const [input, setInput] = useState("");
   const [planFirst, setPlanFirst] = useState(false);
   const [planPending, setPlanPending] = useState(false);
+  const [approvalMode, setApprovalMode] = useState<"manual" | "auto-edit" | "auto">("auto-edit");
+  const [sessionStats, setSessionStats] = useState<string | undefined>();
   const scrollRef = useRef<HTMLDivElement>(null);
   // Streaming deltas mutate the last item; keep a ref to avoid stale closures.
   const itemsRef = useRef(items);
@@ -47,6 +49,8 @@ export function App() {
           setBusy(msg.busy);
           setChanges(msg.changes);
           setPlanPending(msg.planPending);
+          setApprovalMode(msg.approvalMode);
+          setSessionStats(msg.sessionStats);
           break;
         case "planReady":
           setPlanPending(true);
@@ -189,6 +193,20 @@ export function App() {
             Plan
           </label>
           <select
+            className="mode-select"
+            title="Approval mode: how much the agent can do without asking"
+            value={approvalMode}
+            onChange={(e) => {
+              const mode = e.target.value as typeof approvalMode;
+              setApprovalMode(mode);
+              post({ type: "setApprovalMode", mode });
+            }}
+          >
+            <option value="manual">🔒 manual</option>
+            <option value="auto-edit">✎ auto-edit</option>
+            <option value="auto">⚡ auto</option>
+          </select>
+          <select
             value={model}
             onChange={(e) => {
               setModel(e.target.value);
@@ -211,6 +229,7 @@ export function App() {
             </button>
           )}
         </div>
+        {sessionStats && <div className="session-stats">{sessionStats}</div>}
       </div>
     </div>
   );

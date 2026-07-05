@@ -1,11 +1,14 @@
 import * as vscode from "vscode";
 import { ChatViewProvider, ORIGINAL_SCHEME } from "./ChatViewProvider.js";
 import { IndexService } from "./IndexService.js";
+import { inlineEdit } from "./inlineEdit.js";
+import { WrightCompletionProvider } from "./autocomplete.js";
+import { generateCommitMessage } from "./gitCommit.js";
 import { getConfig } from "./config.js";
 
 export function activate(context: vscode.ExtensionContext): void {
   const indexService = new IndexService(getConfig().embedModel);
-  const chatProvider = new ChatViewProvider(context.extensionUri, indexService);
+  const chatProvider = new ChatViewProvider(context.extensionUri, indexService, context.workspaceState);
 
   context.subscriptions.push(
     indexService,
@@ -18,6 +21,9 @@ export function activate(context: vscode.ExtensionContext): void {
       vscode.commands.executeCommand("wright.chat.focus"),
     ),
     vscode.commands.registerCommand("wright.rebuildIndex", () => void indexService.rebuild()),
+    vscode.commands.registerCommand("wright.inlineEdit", () => void inlineEdit()),
+    vscode.commands.registerCommand("wright.generateCommitMessage", () => void generateCommitMessage()),
+    vscode.languages.registerInlineCompletionItemProvider({ pattern: "**" }, new WrightCompletionProvider()),
   );
 }
 

@@ -26,9 +26,10 @@ import {
   nvidiaProvider,
   planContext,
 } from "@wright/core";
-import { Indexer, NodeWorkspaceHost, loadRulesFile } from "@wright/core/node";
+import { Indexer, NodeWorkspaceHost, connectMcpServers, loadRulesFile, type McpServerConfig } from "@wright/core/node";
 import { requireEnv } from "./env.js";
 import * as path from "node:path";
+import { readFileSync } from "node:fs";
 
 const argv = process.argv.slice(2);
 const autoApprove = argv.includes("-y");
@@ -64,6 +65,31 @@ const indexer = await Indexer.load(client, embedModel, root);
 const tools = createBuiltinTools(host);
 if (indexer.isBuilt) tools.push(createCodebaseSearchTool(indexer));
 
+// MCP servers from <workspace>/.wright/mcp.json: {"servers": {name: {command, args?, env?}}}
+let mcpToolCount = 0;
+let mcpDispose: (() => Promise<void>) | undefined;
+try {
+  const mcpConfig = JSON.parse(readFileSync(path.join(root, ".wright", "mcp.json"), "utf8")) as {
+    servers?: Record<string, McpServerConfig>;
+  };
+  if (mcpConfig.servers && Object.keys(mcpConfig.servers).length > 0) {
+    const conn = await connectMcpServers(mcpConfig.servers, {
+      onError: (server, err) => console.error(`mcp server "${server}" failed: ${String(err).slice(0, 120)}`),
+    });
+    tools.push(...conn.tools);
+    mcpToolCount = conn.tools.length;
+    mcpDispose = conn.dispose;
+  }
+} catch {
+  // no mcp.json — fine
+}
+
+/** MCP stdio children keep the event loop alive — always tear down on exit. */
+async function shutdown(): Promise<never> {
+  await mcpDispose?.().catch(() => {});
+  process.exit(0);
+}
+
 const policy = new ApprovalPolicy({ mode });
 const rules = await loadRulesFile(root);
 
@@ -88,6 +114,7 @@ const agent = new Agent({
 
 console.log(`Wright agent — model: ${env.model} — mode: ${mode} — workspace: ${root}`);
 if (rules) console.log(dim("project rules file loaded"));
+if (mcpToolCount > 0) console.log(dim(`${mcpToolCount} MCP tool(s) connected`));
 console.log(
   indexer.isBuilt
     ? `codebase index: ${indexer.store.fileCount} files / ${indexer.store.chunkCount} chunks (semantic search ON)`
@@ -223,6 +250,7 @@ if (oneShot) {
   if (planFirst) await runComposer(oneShot);
   else await runTurn(oneShot);
   rl.close();
+  await shutdown();
 } else {
   while (true) {
     let input: string;
@@ -243,4 +271,5 @@ if (oneShot) {
   }
   rl.close();
   console.log(dim("bye"));
+  await shutdown();
 }

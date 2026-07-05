@@ -42,6 +42,23 @@
       {
         "command": "wright.rebuildIndex",
         "title": "Wright: Rebuild Codebase Index"
+      },
+      {
+        "command": "wright.inlineEdit",
+        "title": "Wright: Inline Edit (describe a change to the selection)"
+      },
+      {
+        "command": "wright.generateCommitMessage",
+        "title": "Wright: Generate Commit Message",
+        "icon": "$(sparkle)"
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "wright.inlineEdit",
+        "key": "ctrl+alt+k",
+        "mac": "ctrl+cmd+k",
+        "when": "editorTextFocus"
       }
     ],
     "menus": {
@@ -49,6 +66,13 @@
         {
           "command": "wright.newChat",
           "when": "view == wright.chat",
+          "group": "navigation"
+        }
+      ],
+      "scm/title": [
+        {
+          "command": "wright.generateCommitMessage",
+          "when": "scmProvider == git",
           "group": "navigation"
         }
       ]
@@ -75,6 +99,56 @@
           "type": "string",
           "default": "nvidia/nv-embedcode-7b-v1",
           "description": "Embedding model for codebase indexing (semantic search)."
+        },
+        "wright.approvalMode": {
+          "type": "string",
+          "enum": ["manual", "auto-edit", "auto"],
+          "default": "auto-edit",
+          "enumDescriptions": [
+            "Every file edit and shell command asks for approval",
+            "File edits run silently; shell commands ask (allowlisted ones run)",
+            "Everything runs silently except deny-listed commands and protected paths"
+          ],
+          "description": "How much Wright's agent can do without asking."
+        },
+        "wright.pricing.inputPer1M": {
+          "type": "number",
+          "default": 0,
+          "description": "USD per 1M input tokens, for the session cost estimate (0 = show token counts only)."
+        },
+        "wright.pricing.outputPer1M": {
+          "type": "number",
+          "default": 0,
+          "description": "USD per 1M output tokens, for the session cost estimate (0 = show token counts only)."
+        },
+        "wright.autocomplete.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Ghost-text tab completions via a local Ollama FIM model (never uses NVIDIA quota). Silently inactive if Ollama isn't running."
+        },
+        "wright.autocomplete.model": {
+          "type": "string",
+          "default": "qwen-coder-7b:latest",
+          "description": "Ollama model for autocomplete. Must support fill-in-middle (the 'insert' capability)."
+        },
+        "wright.autocomplete.ollamaUrl": {
+          "type": "string",
+          "default": "http://localhost:11434",
+          "description": "Base URL of the local Ollama server."
+        },
+        "wright.mcp.servers": {
+          "type": "object",
+          "default": {},
+          "markdownDescription": "MCP (Model Context Protocol) servers whose tools the agent can use. Example: `{\"github\": {\"command\": \"npx\", \"args\": [\"-y\", \"@modelcontextprotocol/server-github\"]}}`. MCP tools require approval except in auto mode.",
+          "additionalProperties": {
+            "type": "object",
+            "properties": {
+              "command": { "type": "string" },
+              "args": { "type": "array", "items": { "type": "string" } },
+              "env": { "type": "object", "additionalProperties": { "type": "string" } }
+            },
+            "required": ["command"]
+          }
         }
       }
     }

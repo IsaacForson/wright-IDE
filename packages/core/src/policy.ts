@@ -70,6 +70,11 @@ export class ApprovalPolicy {
   }
 
   decide(name: string, args: Record<string, unknown>): PolicyDecision {
+    // External (MCP) tools: we can't know what they mutate, so they ask
+    // unless the user has gone full-auto.
+    if (name.startsWith("mcp_")) {
+      return this.config.mode === "auto" ? { action: "allow" } : { action: "ask", reason: "external MCP tool" };
+    }
     // Reads and searches are always silent.
     if (!MUTATING_TOOLS.has(name)) return { action: "allow" };
 
@@ -77,6 +82,15 @@ export class ApprovalPolicy {
       const command = String(args.command ?? "");
       for (const re of this.denyRes) {
         if (re.test(command)) return { action: "ask", reason: "matches the deny list (potentially destructive)" };
+      }
+      // Shell access must not become a side door around file protections:
+      // any command referencing a protected path (redirect, cat, cp, …) asks.
+      for (const token of command.split(/[\s"'`;|&<>()]+/)) {
+        if (!token || token.startsWith("-")) continue;
+        const base = token.split("/").pop() ?? token;
+        if (this.protectedRes.some((re) => re.test(token) || re.test(base))) {
+          return { action: "ask", reason: `references a protected path (${token})` };
+        }
       }
       if (this.config.mode === "manual") return { action: "ask", reason: "manual mode" };
       const allow = this.config.allowCommands ?? DEFAULT_ALLOW_COMMANDS;

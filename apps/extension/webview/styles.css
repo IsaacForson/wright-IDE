@@ -307,6 +307,18 @@ body,
   color: var(--vscode-button-foreground);
 }
 
+.mode-select {
+  flex: none !important;
+  max-width: 110px;
+}
+
+.session-stats {
+  font-size: 0.78em;
+  opacity: 0.55;
+  text-align: right;
+  padding-top: 2px;
+}
+
 .plan-toggle {
   display: flex;
   align-items: center;

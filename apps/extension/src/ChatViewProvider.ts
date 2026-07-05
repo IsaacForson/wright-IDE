@@ -15,7 +15,7 @@ import {
   nvidiaProvider,
   planContext,
 } from "@wright/core";
-import { NodeWorkspaceHost, loadRulesFile } from "@wright/core/node";
+import { NodeWorkspaceHost, connectMcpServers, loadRulesFile, type McpConnection, type McpServerConfig } from "@wright/core/node";
 import { IndexService } from "./IndexService.js";
 import { getConfig } from "./config.js";
 import { workspaceRoot } from "./workspace.js";
@@ -48,6 +48,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private approvalMode: ApprovalMode;
   /** Cost meter (Phase 9): tokens spent this session. */
   private sessionUsage = { input: 0, output: 0 };
+  /** MCP connections (Phase 11), established once per window. */
+  private mcp: McpConnection | undefined;
+  private mcpAttempted = false;
 
   constructor(
     private readonly extensionUri: vscode.Uri,
@@ -235,6 +238,22 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     const indexer = await this.indexService.ensure(client, root.fsPath);
     if (indexer) tools.push(createCodebaseSearchTool(indexer));
     const rules = await loadRulesFile(root.fsPath);
+
+    // MCP tool servers (Phase 11), from wright.mcp.servers.
+    if (!this.mcpAttempted) {
+      this.mcpAttempted = true;
+      const servers = vscode.workspace.getConfiguration("wright").get<Record<string, McpServerConfig>>("mcp.servers") ?? {};
+      if (Object.keys(servers).length > 0) {
+        this.mcp = await connectMcpServers(servers, {
+          onError: (server, err) =>
+            vscode.window.showWarningMessage(`Wright: MCP server "${server}" failed to start: ${String(err).slice(0, 120)}`),
+        });
+        const total = this.mcp.tools.length;
+        if (total > 0) vscode.window.setStatusBarMessage(`Wright: ${total} MCP tool(s) connected`, 5_000);
+      }
+    }
+    if (this.mcp) tools.push(...this.mcp.tools);
+
     const agent = new Agent({
       client,
       model: this.model,
