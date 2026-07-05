@@ -51,6 +51,15 @@ const ICON_PATHS: Record<string, ReactNode> = {
   question: <path d="M6 6a2 2 0 1 1 2.9 1.8c-.6.3-.9.7-.9 1.2v.5m0 2.5h.01M8 14A6 6 0 1 0 8 2a6 6 0 0 0 0 12Z" />,
   sparkle: <path d="M8 2.5 9.3 6 13 7.3 9.3 8.7 8 12.5 6.7 8.7 3 7.3 6.7 6 8 2.5Z" />,
   image: <path d="M3.5 2.5h9a1 1 0 0 1 1 1v9a1 1 0 0 1-1 1h-9a1 1 0 0 1-1-1v-9a1 1 0 0 1 1-1Zm2.5 4a1 1 0 1 0 0-2 1 1 0 0 0 0 2Zm-3.5 5 3-3 2 2 3-3 3 3" />,
+  gear: (
+    <>
+      <path d="M8 10a2 2 0 1 0 0-4 2 2 0 0 0 0 4Z" />
+      <path d="M8 1.5v1.6M8 12.9v1.6M3.4 3.4l1.1 1.1M11.5 11.5l1.1 1.1M1.5 8h1.6M12.9 8h1.6M3.4 12.6l1.1-1.1M11.5 4.5l1.1-1.1" />
+    </>
+  ),
+  compass: <path d="M8 14A6 6 0 1 0 8 2a6 6 0 0 0 0 12Zm2.6-8.6L9.2 9.2 5.4 10.6l1.4-3.8 3.8-1.4Z" />,
+  telescope: <path d="m2.5 10.5 8-6 2 3-8 6-2-3Zm7-6.5 1.2-.7 1.6 2.6-1.2.7M6 9l2 4M5 13h3M10.5 4.2l1-1.5" />,
+  slash: <path d="M8 14A6 6 0 1 0 8 2a6 6 0 0 0 0 12Zm-4-2 8-8" />,
 };
 
 export function Icon({ name, size = 14, spin = false }: { name: string; size?: number; spin?: boolean }) {

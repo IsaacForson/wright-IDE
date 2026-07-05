@@ -46,11 +46,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private mcp: McpConnection | undefined;
   private mcpAttempted = false;
   /** What the current agent was built for; a mismatch forces a rebuild. */
-  private agentBuiltFor: { model: string; mode: AgentMode } | undefined;
+  private agentBuiltFor: { model: string; mode: AgentMode; research: ResearchMode } | undefined;
   /** Cached workspace file list for the @-mention picker. */
   private fileListCache: { entries: Array<{ path: string; type: "file" | "dir" }>; at: number } | undefined;
   /** A big-looking agent task parked while the user decides Plan vs Agent. */
-  private pendingSuggest: { text: string; images?: string[]; files?: FileAttachment[] } | undefined;
+  private pendingSuggest: { text: string; images?: string[]; files?: FileAttachment[]; research: ResearchMode } | undefined;
 
   constructor(
     private readonly extensionUri: vscode.Uri,
@@ -222,14 +222,17 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           const mode: AgentMode = msg.mode === "plan" || msg.mode === "agent" ? "agent" : msg.mode;
           // Big-task detection (agent mode only): offer to plan first.
           if (mode === "agent" && msg.mode === "agent" && !msg.images?.length && (await this.looksLikeBigTask(msg.text))) {
-            this.pendingSuggest = { text: msg.text, images: msg.images, files: msg.files };
+            this.pendingSuggest = { text: msg.text, images: msg.images, files: msg.files, research: msg.research };
             this.items.push({ kind: "text", role: "user", content: msg.text, files: msg.files?.map((f) => f.name) });
             this.post({ type: "planSuggest" });
             this.sendState(false);
             return;
           }
-          await this.handleSend(msg.text, { images: msg.images, files: msg.files, mode });
+          await this.handleSend(msg.text, { images: msg.images, files: msg.files, mode, research: msg.research });
         }
+        return;
+      case "openSettings":
+        await vscode.commands.executeCommand("workbench.action.openSettings", "wright");
         return;
       case "planDecision": {
         const parked = this.pendingSuggest;
@@ -376,7 +379,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this.post({ type: "fileList", token, entries: scored });
   }
 
-  private async buildAgent(apiKey: string, model: string, mode: AgentMode): Promise<Agent> {
+  private async buildAgent(apiKey: string, model: string, mode: AgentMode, research: ResearchMode): Promise<Agent> {
     const root = workspaceRoot();
     if (!root) throw new Error("Open a folder first — Wright's agent needs a workspace to work in.");
     const config = getConfig();
@@ -413,7 +416,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       client,
       model,
       tools,
-      systemPrompt: agentSystemPrompt({ workspaceName: vscode.workspace.name, rules, mode }),
+      // Deep research fans out into many search rounds; give it headroom.
+      maxIterations: research === "deep" ? 60 : research === "research" ? 40 : 25,
+      systemPrompt: agentSystemPrompt({ workspaceName: vscode.workspace.name, rules, mode, research }),
       approve: async (name, args) => {
         const decision = new ApprovalPolicy({ mode: this.approvalMode }).decide(name, args);
         if (decision.action === "allow") return true;
@@ -496,7 +501,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
   private async handleSend(
     text: string,
-    opts: { displayText?: string; images?: string[]; files?: FileAttachment[]; mode?: AgentMode; skipUserItem?: boolean } = {},
+    opts: { displayText?: string; images?: string[]; files?: FileAttachment[]; mode?: AgentMode; research?: ResearchMode; skipUserItem?: boolean } = {},
   ): Promise<void> {
     if (this.abort) return; // already running; UI disables send, but guard anyway
 
@@ -511,13 +516,19 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     }
 
     const mode = opts.mode ?? "agent";
+    const research = opts.research ?? "off";
     const resolvedModel = this.resolveModel(mode, (opts.images?.length ?? 0) > 0);
     try {
-      if (!this.agent || this.agentBuiltFor?.model !== resolvedModel || this.agentBuiltFor.mode !== mode) {
-        // Carry the conversation across model/mode switches.
+      if (
+        !this.agent ||
+        this.agentBuiltFor?.model !== resolvedModel ||
+        this.agentBuiltFor.mode !== mode ||
+        this.agentBuiltFor.research !== research
+      ) {
+        // Carry the conversation across model/mode/research switches.
         if (this.agent) this.savedMessages = [...this.agent.history];
-        this.agent = await this.buildAgent(config.apiKey, resolvedModel, mode);
-        this.agentBuiltFor = { model: resolvedModel, mode };
+        this.agent = await this.buildAgent(config.apiKey, resolvedModel, mode, research);
+        this.agentBuiltFor = { model: resolvedModel, mode, research };
       }
     } catch (err) {
       this.post({ type: "error", message: err instanceof Error ? err.message : String(err) });

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { marked } from "marked";
-import type { ChatMode, FileAttachment, HostToWebview, UiItem } from "../src/protocol.js";
+import type { ChatMode, FileAttachment, HostToWebview, ResearchMode, UiItem } from "../src/protocol.js";
 import { post } from "./vscode.js";
 import { Icon, IconButton, Select, toolIcon, type SelectOption } from "./components.js";
 
@@ -23,6 +23,13 @@ const APPROVAL_OPTIONS: SelectOption[] = [
   { value: "manual", label: "manual", hint: "approve everything" },
   { value: "auto-edit", label: "auto-edit", hint: "commands ask" },
   { value: "auto", label: "auto", hint: "guardrails only" },
+];
+
+const RESEARCH_OPTIONS: SelectOption[] = [
+  { value: "off", label: "Default", icon: "slash", hint: "no forced web search" },
+  { value: "websearch", label: "Web Search", icon: "globe", hint: "back answers with the web" },
+  { value: "research", label: "Research", icon: "compass", hint: "multi-query synthesis" },
+  { value: "deep", label: "Deep Research", icon: "telescope", hint: "exhaustive, slower" },
 ];
 
 function modelLabel(id: string): string {
@@ -78,6 +85,7 @@ export function App() {
   const [error, setError] = useState<string | undefined>();
   const [input, setInput] = useState("");
   const [mode, setMode] = useState<ChatMode>("agent");
+  const [research, setResearch] = useState<ResearchMode>("off");
   const [planPending, setPlanPending] = useState(false);
   const [approvalMode, setApprovalMode] = useState<"manual" | "auto-edit" | "auto">("auto-edit");
   const [sessionStats, setSessionStats] = useState<string | undefined>();
@@ -342,7 +350,7 @@ export function App() {
       ...prev,
       { kind: "text", role: "user", content: text, images: images.length ? images : undefined, files: files.length ? files.map((f) => f.name) : undefined },
     ]);
-    post({ type: "send", text, mode, images: images.length ? images : undefined, files: files.length ? files : undefined });
+    post({ type: "send", text, mode, research, images: images.length ? images : undefined, files: files.length ? files : undefined });
   };
 
   const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -400,6 +408,13 @@ export function App() {
           <span>Drop files to attach as context</span>
         </div>
       )}
+
+      <div className="chat-header">
+        <span className="chat-header-title">Wright</span>
+        <div className="spacer" />
+        <IconButton icon="plus" title="New chat" onClick={() => post({ type: "newChat" })} />
+        <IconButton icon="gear" title="Wright settings" onClick={() => post({ type: "openSettings" })} />
+      </div>
 
       <div className="messages" ref={scrollRef}>
         {items.length === 0 && (
@@ -487,6 +502,19 @@ export function App() {
       )}
 
       <div className="composer-wrap">
+        <div className="research-row">
+          <Select
+            value={research}
+            options={RESEARCH_OPTIONS}
+            onChange={(v) => setResearch(v as ResearchMode)}
+            minWidth={230}
+            title="Web & research depth"
+            triggerClassName={`research-pill research-${research}`}
+            iconSize={13}
+          />
+          {research !== "off" && <span className="research-note">answers grounded in live web sources</span>}
+        </div>
+
         {mention && mention.entries.length > 0 && (
           <div className="mention-menu">
             {mention.entries.map((entry, i) => (
