@@ -29,6 +29,11 @@ export type WebviewToHost =
   | { type: "setApprovalMode"; mode: "manual" | "auto-edit" | "auto" }
   | { type: "queryFiles"; query: string; token: number }
   | { type: "planDecision"; usePlan: boolean }
+  | { type: "openFile"; path: string }
+  | { type: "copyText"; text: string }
+  | { type: "listSessions" }
+  | { type: "openSession"; id: string }
+  | { type: "deleteSession"; id: string }
   | { type: "openDiff"; path: string }
   | { type: "keepFile"; path: string }
   | { type: "revertFile"; path: string }
@@ -76,5 +81,6 @@ export type HostToWebview =
   | { type: "writeDone"; id: string; status: "ok" | "error" | "declined" }
   | { type: "changes"; changes: FileChangeItem[] }
   | { type: "fileList"; token: number; entries: Array<{ path: string; type: "file" | "dir" }> }
+  | { type: "sessions"; sessions: Array<{ id: string; title: string; updatedAt: number; current: boolean }> }
   | { type: "turnDone"; stats?: string }
   | { type: "error"; message: string };

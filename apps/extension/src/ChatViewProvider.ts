@@ -27,6 +27,16 @@ import type { AgentMode } from "@wright/core";
 /** Virtual document scheme serving pre-edit snapshots for the diff editor. */
 export const ORIGINAL_SCHEME = "wright-original";
 
+/** One persisted chat in workspaceState (30-day retention). */
+interface StoredSession {
+  id: string;
+  title: string;
+  updatedAt: number;
+  items: UiItem[];
+  messages: ChatMessage[];
+  model: string;
+}
+
 
 export class ChatViewProvider implements vscode.WebviewViewProvider {
   static readonly viewType = "wright.chat";
@@ -64,26 +74,85 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this.restoreSession();
   }
 
-  // ── Session persistence (Phase 10) ────────────────────────────────────
+  // ── Session persistence & history (Phase 10) ─────────────────────────
+  // All chats live in workspaceState under "wright.sessions"; anything
+  // untouched for 30 days is pruned on load. Capped at 40 sessions.
 
-  private restoreSession(): void {
-    const saved = this.memento.get<{ items: UiItem[]; messages: ChatMessage[]; model: string }>("wright.session");
-    if (!saved || saved.items.length === 0) return;
-    this.items = saved.items;
-    this.model = saved.model || this.model;
-    this.savedMessages = saved.messages;
-  }
+  private sessionId = `s${Date.now().toString(36)}`;
 
   /** Agent history to restore once the agent is first built this session. */
   private savedMessages: ChatMessage[] | undefined;
 
+  private loadSessions(): StoredSession[] {
+    const cutoff = Date.now() - 30 * 24 * 60 * 60 * 1000;
+    return (this.memento.get<StoredSession[]>("wright.sessions") ?? []).filter((s) => s.updatedAt > cutoff);
+  }
+
+  private restoreSession(): void {
+    const sessions = this.loadSessions();
+    void this.memento.update("wright.sessions", sessions); // persist the prune
+    const currentId = this.memento.get<string>("wright.currentSession");
+    const session = sessions.find((s) => s.id === currentId) ?? sessions.sort((a, b) => b.updatedAt - a.updatedAt)[0];
+    if (!session || session.items.length === 0) return;
+    this.sessionId = session.id;
+    this.items = session.items;
+    this.model = session.model || this.model;
+    this.savedMessages = session.messages;
+  }
+
   private persistSession(): void {
+    if (this.items.length === 0) return;
     const messages = this.agent ? [...this.agent.history] : (this.savedMessages ?? []);
-    void this.memento.update("wright.session", {
+    const firstUser = this.items.find((i) => i.kind === "text" && i.role === "user");
+    const title = (firstUser?.kind === "text" ? firstUser.content : "").replace(/\s+/g, " ").slice(0, 60) || "New chat";
+    const sessions = this.loadSessions().filter((s) => s.id !== this.sessionId);
+    sessions.unshift({
+      id: this.sessionId,
+      title,
+      updatedAt: Date.now(),
       items: this.items.slice(-200),
       messages: messages.slice(-100),
       model: this.model,
     });
+    void this.memento.update("wright.sessions", sessions.slice(0, 40));
+    void this.memento.update("wright.currentSession", this.sessionId);
+  }
+
+  private sendSessions(): void {
+    const sessions = this.loadSessions()
+      .sort((a, b) => b.updatedAt - a.updatedAt)
+      .map((s) => ({ id: s.id, title: s.title, updatedAt: s.updatedAt, current: s.id === this.sessionId }));
+    this.post({ type: "sessions", sessions });
+  }
+
+  private switchSession(id: string): void {
+    if (id === this.sessionId) return;
+    this.persistSession();
+    const session = this.loadSessions().find((s) => s.id === id);
+    if (!session) return;
+    this.abort?.abort();
+    this.sessionId = session.id;
+    this.items = session.items;
+    this.model = session.model || this.model;
+    this.savedMessages = session.messages;
+    this.agent = undefined;
+    this.agentBuiltFor = undefined;
+    this.pendingPlan = undefined;
+    void this.memento.update("wright.currentSession", this.sessionId);
+    this.sendState(false);
+  }
+
+  private deleteSession(id: string): void {
+    void this.memento.update("wright.sessions", this.loadSessions().filter((s) => s.id !== id));
+    if (id === this.sessionId) {
+      this.items = [];
+      this.savedMessages = undefined;
+      this.agent = undefined;
+      this.agentBuiltFor = undefined;
+      this.sessionId = `s${Date.now().toString(36)}`;
+      this.sendState(false);
+    }
+    this.sendSessions();
   }
 
   /** Serves original file content to the left side of diff views. */
@@ -144,6 +213,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
   newChat(): void {
     this.abort?.abort();
+    this.persistSession(); // park the old conversation in history
     this.agent = undefined;
     this.agentBuiltFor = undefined;
     // Changes stay on disk; starting a new chat just stops tracking them.
@@ -151,7 +221,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this.pendingPlan = undefined;
     this.savedMessages = undefined;
     this.items = [];
-    this.persistSession();
+    this.sessionId = `s${Date.now().toString(36)}`;
     this.sendState(false);
   }
 
@@ -234,6 +304,30 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         return;
       case "openSettings":
         await vscode.commands.executeCommand("workbench.action.openSettings", "wright");
+        return;
+      case "openFile": {
+        const root = workspaceRoot();
+        if (!root) return;
+        try {
+          await vscode.window.showTextDocument(vscode.Uri.joinPath(root, msg.path), { preview: true });
+        } catch {
+          vscode.window.showWarningMessage(`Wright: could not open ${msg.path}`);
+        }
+        return;
+      }
+      case "copyText":
+        await vscode.env.clipboard.writeText(msg.text);
+        vscode.window.setStatusBarMessage("Wright: code copied", 2_500);
+        return;
+      case "listSessions":
+        this.persistSession(); // make sure the current chat shows up too
+        this.sendSessions();
+        return;
+      case "openSession":
+        this.switchSession(msg.id);
+        return;
+      case "deleteSession":
+        this.deleteSession(msg.id);
         return;
       case "planDecision": {
         const parked = this.pendingSuggest;

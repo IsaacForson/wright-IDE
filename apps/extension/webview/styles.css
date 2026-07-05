@@ -292,6 +292,90 @@ body,
   opacity: 0.5;
 }
 
+.sessions-panel {
+  position: absolute;
+  top: 34px;
+  left: 8px;
+  right: 8px;
+  z-index: 60;
+  max-height: 55%;
+  overflow-y: auto;
+  padding: 8px;
+  border: 1px solid var(--w-border);
+  border-radius: var(--w-radius-lg);
+  background: var(--vscode-editorWidget-background, var(--vscode-sideBar-background));
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.35);
+  animation: pop 0.12s ease;
+}
+
+.sessions-title {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  opacity: 0.55;
+  padding: 2px 6px 8px;
+}
+
+.sessions-note {
+  font-weight: 400;
+  text-transform: none;
+  letter-spacing: 0;
+  opacity: 0.7;
+}
+
+.sessions-empty {
+  padding: 8px 6px 10px;
+  opacity: 0.5;
+  font-size: 12px;
+}
+
+.session-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  border-radius: var(--w-radius);
+}
+
+.session-row:hover {
+  background: var(--w-hover);
+}
+
+.session-row.current .session-title {
+  color: var(--vscode-textLink-foreground);
+}
+
+.session-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  border: none;
+  background: none;
+  color: var(--vscode-foreground);
+  font: inherit;
+  font-size: 12.5px;
+  padding: 6px 8px;
+  cursor: pointer;
+  text-align: left;
+}
+
+.session-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.session-time {
+  flex: none;
+  font-size: 11px;
+  opacity: 0.45;
+  white-space: nowrap;
+}
+
 .messages {
   flex: 1;
   overflow-y: auto;
@@ -645,6 +729,18 @@ body,
   white-space: nowrap;
   font-family: var(--w-mono);
   font-weight: 500;
+  border: none;
+  background: none;
+  color: var(--vscode-foreground);
+  font-size: inherit;
+  text-align: left;
+  padding: 0;
+  cursor: pointer;
+}
+
+.write-path:hover {
+  color: var(--vscode-textLink-foreground);
+  text-decoration: underline;
 }
 
 .write-body {
@@ -728,6 +824,93 @@ body,
 .hljs-selector-id,
 .hljs-selector-class {
   color: #7fd6c2;
+}
+
+/* ── light & high-contrast theme adaptation ──
+   Everything else themes itself via --vscode-* variables; syntax colors,
+   shadows, and pill tints need explicit light variants. */
+
+body.vscode-light .hljs {
+  color: #24292f;
+}
+
+body.vscode-light .hljs-keyword,
+body.vscode-light .hljs-operator {
+  color: #a626a4;
+}
+
+body.vscode-light .hljs-string,
+body.vscode-light .hljs-regexp,
+body.vscode-light .hljs-addition {
+  color: #448c27;
+}
+
+body.vscode-light .hljs-title,
+body.vscode-light .hljs-title.function_,
+body.vscode-light .hljs-title.class_ {
+  color: #0550ae;
+}
+
+body.vscode-light .hljs-attr,
+body.vscode-light .hljs-attribute,
+body.vscode-light .hljs-variable,
+body.vscode-light .hljs-template-variable,
+body.vscode-light .hljs-doctag,
+body.vscode-light .hljs-meta,
+body.vscode-light .hljs-selector-id,
+body.vscode-light .hljs-selector-class {
+  color: #116329;
+}
+
+body.vscode-light .hljs-number,
+body.vscode-light .hljs-literal,
+body.vscode-light .hljs-symbol {
+  color: #953800;
+}
+
+body.vscode-light .hljs-comment,
+body.vscode-light .hljs-quote,
+body.vscode-light .hljs-deletion {
+  color: #6e7781;
+}
+
+body.vscode-light .hljs-built_in,
+body.vscode-light .hljs-type,
+body.vscode-light .hljs-selector-tag,
+body.vscode-light .hljs-name,
+body.vscode-light .hljs-tag {
+  color: #8a5a00;
+}
+
+body.vscode-light .select-menu,
+body.vscode-light .mention-menu,
+body.vscode-light .sessions-panel {
+  box-shadow: 0 6px 22px rgba(20, 30, 50, 0.16);
+}
+
+body.vscode-light .mode-plan {
+  color: #8a5a00;
+  background: rgba(154, 103, 0, 0.12);
+}
+
+body.vscode-light .mode-ask {
+  color: #0d7d6c;
+  background: rgba(13, 125, 108, 0.1);
+}
+
+body.vscode-light .mode-multi {
+  color: #6a48d7;
+  background: rgba(106, 72, 215, 0.1);
+}
+
+body.vscode-light .research-pill.research-websearch {
+  color: #0d7d6c;
+  background: rgba(13, 125, 108, 0.1);
+}
+
+body.vscode-light .research-pill.research-deep {
+  color: #6a48d7;
+  background: rgba(106, 72, 215, 0.1);
 }
 
 .turn-stats {

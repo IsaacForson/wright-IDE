@@ -108,6 +108,15 @@ function activityLabel(name: string, args: string): string {
   }
 }
 
+function relativeTime(ts: number): string {
+  const mins = Math.round((Date.now() - ts) / 60_000);
+  if (mins < 1) return "just now";
+  if (mins < 60) return `${mins}m ago`;
+  const hours = Math.round(mins / 60);
+  if (hours < 24) return `${hours}h ago`;
+  return `${Math.round(hours / 24)}d ago`;
+}
+
 interface MentionState {
   query: string;
   /** Index into the textarea where the "@" starts. */
@@ -138,6 +147,8 @@ export function App() {
   const [elapsed, setElapsed] = useState(0);
   /** Seconds left on the "big task — plan first?" countdown; undefined = hidden. */
   const [suggestLeft, setSuggestLeft] = useState<number | undefined>();
+  /** Chat history overlay; undefined = closed. */
+  const [sessions, setSessions] = useState<Array<{ id: string; title: string; updatedAt: number; current: boolean }> | undefined>();
 
   // Countdown for the plan suggestion: at 0, auto-continue with the agent.
   useEffect(() => {
@@ -199,6 +210,9 @@ export function App() {
           break;
         case "changes":
           setChanges(msg.changes);
+          break;
+        case "sessions":
+          setSessions(msg.sessions);
           break;
         case "fileList":
           if (msg.token === mentionToken.current) {
@@ -475,9 +489,42 @@ export function App() {
       <div className="chat-header">
         <span className="chat-header-title">Wright</span>
         <div className="spacer" />
-        <IconButton icon="plus" title="New chat" onClick={() => post({ type: "newChat" })} />
+        <IconButton icon="plus" title="New chat" onClick={() => { setSessions(undefined); post({ type: "newChat" }); }} />
+        <IconButton
+          icon="history"
+          title="Chat history"
+          onClick={() => {
+            if (sessions) setSessions(undefined);
+            else {
+              setSessions([]);
+              post({ type: "listSessions" });
+            }
+          }}
+        />
         <IconButton icon="gear" title="Wright settings" onClick={() => post({ type: "openSettings" })} />
       </div>
+
+      {sessions && (
+        <div className="sessions-panel">
+          <div className="sessions-title">Recent chats <span className="sessions-note">kept 30 days</span></div>
+          {sessions.length === 0 && <div className="sessions-empty">No saved chats yet.</div>}
+          {sessions.map((s) => (
+            <div key={s.id} className={`session-row${s.current ? " current" : ""}`}>
+              <button
+                className="session-main"
+                onClick={() => {
+                  setSessions(undefined);
+                  if (!s.current) post({ type: "openSession", id: s.id });
+                }}
+              >
+                <span className="session-title">{s.title}</span>
+                <span className="session-time">{relativeTime(s.updatedAt)}</span>
+              </button>
+              <IconButton icon="trash" title="Delete chat" danger size={12} onClick={() => post({ type: "deleteSession", id: s.id })} />
+            </div>
+          ))}
+        </div>
+      )}
 
       <div className="messages" ref={scrollRef}>
         {items.length === 0 && (
@@ -750,14 +797,38 @@ function WriteBlock({ item }: { item: Extract<UiItem, { kind: "write" }> }) {
     if (streaming && bodyRef.current) bodyRef.current.scrollTop = bodyRef.current.scrollHeight;
   }, [html, streaming]);
 
+  const [copied, setCopied] = useState(false);
   return (
     <div className={`write-block ${item.status}`}>
       <div className="write-header">
         <Icon name="pencil" size={12} />
-        <span className="write-path">{item.path}</span>
-        <span className={`tool-status ${item.status === "streaming" || item.status === "running" ? "running" : item.status}`}>
-          {streaming ? <Icon name="spinner" size={12} spin /> : item.status === "ok" ? <Icon name="check" size={12} /> : <Icon name="x" size={12} />}
-        </span>
+        <button className="write-path" title={`Open ${item.path}`} onClick={() => post({ type: "openFile", path: item.path })}>
+          {item.path}
+        </button>
+        {streaming ? (
+          <span className="tool-status running">
+            <Icon name="spinner" size={12} spin />
+          </span>
+        ) : (
+          <>
+            {item.status !== "ok" && (
+              <span className={`tool-status ${item.status}`}>
+                <Icon name="x" size={12} />
+              </span>
+            )}
+            <button
+              className="icon-button"
+              title="Copy code"
+              onClick={() => {
+                post({ type: "copyText", text: item.code });
+                setCopied(true);
+                setTimeout(() => setCopied(false), 1500);
+              }}
+            >
+              <Icon name={copied ? "check" : "copy"} size={12} />
+            </button>
+          </>
+        )}
       </div>
       <pre ref={bodyRef} className={`write-body${streaming ? " streaming" : ""}`}>
         <code className="hljs" dangerouslySetInnerHTML={{ __html: html }} />
