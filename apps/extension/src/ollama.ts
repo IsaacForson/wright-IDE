@@ -62,13 +62,12 @@ export async function listLocalModels(): Promise<LocalModel[]> {
   }
 }
 
-/** Curated coding models offered for one-click download. */
+/** Curated coding models offered for one-click download (sized for ≤16 GB Macs). */
 export const RECOMMENDED_LOCAL_MODELS: Array<{ id: string; blurb: string }> = [
-  { id: "qwen2.5-coder:7b", blurb: "strong coding · tools · ~4.7 GB" },
-  { id: "qwen2.5-coder:14b", blurb: "stronger coding · tools · ~9 GB" },
-  { id: "llama3.2:3b", blurb: "small & fast · tools · ~2 GB" },
-  { id: "llama3.1:8b", blurb: "general · tools · ~4.9 GB" },
-  { id: "deepseek-coder-v2:16b", blurb: "coding · ~10 GB" },
+  { id: "qwen2.5-coder:14b", blurb: "★ best local coder for 16 GB · agentic tools · ~9 GB" },
+  { id: "qwen3:14b", blurb: "★ best local reasoning & chat · thinking · tools · ~9.3 GB" },
+  { id: "qwen2.5-coder:7b", blurb: "lighter coder · tools · ~4.7 GB" },
+  { id: "llama3.2:3b", blurb: "tiny & fast · tools · ~2 GB" },
 ];
 
 /** Pull a model with live progress; resolves true on success. */

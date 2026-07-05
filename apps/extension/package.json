@@ -152,7 +152,7 @@
         },
         "wright.fallback.ollamaModel": {
           "type": "string",
-          "default": "qwen-coder-7b:latest",
+          "default": "qwen2.5-coder:14b",
           "description": "Ollama model used for the local fallback (must support tool calling for agent work)."
         },
         "wright.fallback.providers": {
@@ -278,7 +278,7 @@
         },
         "wright.autocomplete.model": {
           "type": "string",
-          "default": "qwen-coder-7b:latest",
+          "default": "qwen2.5-coder:14b",
           "description": "Ollama model for autocomplete. Must support fill-in-middle (the 'insert' capability)."
         },
         "wright.autocomplete.ollamaUrl": {

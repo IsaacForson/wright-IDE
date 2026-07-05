@@ -27,7 +27,7 @@ function getAutocompleteConfig(): OllamaConfig {
   return {
     enabled: cfg.get<boolean>("enabled") ?? true,
     url: (cfg.get<string>("ollamaUrl") || "http://localhost:11434").replace(/\/$/, ""),
-    model: cfg.get<string>("model") || "qwen-coder-7b:latest",
+    model: cfg.get<string>("model") || "qwen2.5-coder:14b",
   };
 }
 

@@ -761,7 +761,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         });
       }
       if (wcfg.get<boolean>("fallback.ollama") ?? true) {
-        const ollamaModel = wcfg.get<string>("fallback.ollamaModel") || "qwen-coder-7b:latest";
+        const ollamaModel = wcfg.get<string>("fallback.ollamaModel") || "qwen2.5-coder:14b";
         targets.push({
           name: "ollama (local)",
           model: ollamaModel,
