@@ -1,0 +1,12 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "wright: build extension",
+      "type": "shell",
+      "command": "pnpm --filter @wright/core build && pnpm --filter wright-extension build",
+      "options": { "cwd": "${workspaceFolder}" },
+      "problemMatcher": ["$tsc"]
+    }
+  ]
+}

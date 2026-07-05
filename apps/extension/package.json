@@ -1,0 +1,101 @@
+{
+  "name": "wright-extension",
+  "displayName": "Wright",
+  "description": "A Cursor-like AI assistant powered by NVIDIA NIM",
+  "version": "0.1.0",
+  "private": true,
+  "publisher": "wright-dev",
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": ["AI", "Chat"],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "wright",
+          "title": "Wright",
+          "icon": "media/wright.svg"
+        }
+      ]
+    },
+    "views": {
+      "wright": [
+        {
+          "type": "webview",
+          "id": "wright.chat",
+          "name": "Chat"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "wright.newChat",
+        "title": "Wright: New Chat",
+        "icon": "$(add)"
+      },
+      {
+        "command": "wright.focusChat",
+        "title": "Wright: Open Chat"
+      },
+      {
+        "command": "wright.rebuildIndex",
+        "title": "Wright: Rebuild Codebase Index"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "wright.newChat",
+          "when": "view == wright.chat",
+          "group": "navigation"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Wright",
+      "properties": {
+        "wright.nvidia.apiKey": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "NVIDIA NIM API key from [build.nvidia.com](https://build.nvidia.com). If empty, Wright falls back to the `NVIDIA_API_KEY` env var, then to a `.env` file at the workspace root."
+        },
+        "wright.model.chat": {
+          "type": "string",
+          "default": "z-ai/glm-5.2",
+          "description": "Primary model for chat and (later) the agent. Must support tool calling."
+        },
+        "wright.model.fast": {
+          "type": "string",
+          "default": "meta/llama-3.1-8b-instruct",
+          "description": "Cheap/fast model for lightweight tasks."
+        },
+        "wright.model.embed": {
+          "type": "string",
+          "default": "nvidia/nv-embedcode-7b-v1",
+          "description": "Embedding model for codebase indexing (semantic search)."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build": "node esbuild.mjs",
+    "watch": "node esbuild.mjs --watch",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@wright/core": "workspace:*",
+    "marked": "^15.0.0",
+    "react": "^18.3.0",
+    "react-dom": "^18.3.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "@types/react": "^18.3.0",
+    "@types/react-dom": "^18.3.0",
+    "@types/vscode": "^1.90.0",
+    "esbuild": "^0.28.0",
+    "typescript": "^5.7.0"
+  }
+}
