@@ -10,6 +10,7 @@ import {
   type ChatMessage,
   createBuiltinTools,
   createCodebaseSearchTool,
+  createWebSearchTool,
   executionMessage,
   generatePlan,
   nvidiaProvider,
@@ -168,7 +169,16 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         void vscode.workspace.getConfiguration("wright").update("approvalMode", msg.mode);
         return;
       case "send":
-        if (this.pendingPlan) {
+        if (msg.images && msg.images.length > 0) {
+          // Images force a vision-capable model for this conversation.
+          const visionModel = getConfig().visionModel;
+          if (this.model !== visionModel) {
+            this.model = visionModel;
+            this.agent = undefined;
+            vscode.window.setStatusBarMessage(`Wright: switched to ${visionModel} for image input`, 4_000);
+          }
+          await this.handleSend(msg.text, { images: msg.images });
+        } else if (this.pendingPlan) {
           // Typing while a plan awaits approval = revision feedback.
           await this.handlePlan(this.pendingPlan.task, msg.text);
         } else if (msg.planFirst) {
@@ -237,6 +247,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     const tools = createBuiltinTools(this.tracker);
     const indexer = await this.indexService.ensure(client, root.fsPath);
     if (indexer) tools.push(createCodebaseSearchTool(indexer));
+    tools.push(createWebSearchTool(config.webSearch));
     const rules = await loadRulesFile(root.fsPath);
 
     // MCP tool servers (Phase 11), from wright.mcp.servers.
@@ -338,7 +349,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     }
   }
 
-  private async handleSend(text: string, opts: { displayText?: string } = {}): Promise<void> {
+  private async handleSend(text: string, opts: { displayText?: string; images?: string[] } = {}): Promise<void> {
     if (this.abort) return; // already running; UI disables send, but guard anyway
 
     const config = getConfig();
@@ -358,7 +369,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       return;
     }
 
-    this.items.push({ kind: "text", role: "user", content: opts.displayText ?? text });
+    this.items.push({ kind: "text", role: "user", content: opts.displayText ?? text, images: opts.images });
     this.sendState(true);
     text = await this.expandMentions(text);
 
@@ -367,7 +378,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     let currentText: Extract<UiItem, { kind: "text" }> | undefined;
 
     try {
-      for await (const event of this.agent.run(text, { signal: this.abort.signal })) {
+      for await (const event of this.agent.run(text, { signal: this.abort.signal, images: opts.images })) {
         switch (event.type) {
           case "text":
             if (!currentText) {
@@ -452,7 +463,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 <head>
   <meta charset="UTF-8">
   <meta http-equiv="Content-Security-Policy"
-        content="default-src 'none'; style-src ${webview.cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}';">
+        content="default-src 'none'; style-src ${webview.cspSource} 'unsafe-inline'; img-src data:; script-src 'nonce-${nonce}';">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <link rel="stylesheet" href="${styleUri}">
   <title>Wright</title>

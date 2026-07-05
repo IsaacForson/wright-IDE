@@ -9,6 +9,8 @@ export interface WrightConfig {
   chatModel: string;
   fastModel: string;
   embedModel: string;
+  visionModel: string;
+  webSearch: { provider: "tavily" | "brave" | "duckduckgo"; apiKey: string | undefined };
   approvalMode: ApprovalMode;
   /** USD per 1M tokens; 0 disables the cost estimate. */
   priceInPer1M: number;
@@ -28,6 +30,11 @@ export function getConfig(): WrightConfig {
     chatModel: cfg.get<string>("model.chat") || "z-ai/glm-5.2",
     fastModel: cfg.get<string>("model.fast") || "meta/llama-3.1-8b-instruct",
     embedModel: cfg.get<string>("model.embed") || "nvidia/nv-embedcode-7b-v1",
+    visionModel: cfg.get<string>("model.vision") || "meta/llama-4-maverick-17b-128e-instruct",
+    webSearch: {
+      provider: (cfg.get<string>("webSearch.provider") as "tavily" | "brave" | "duckduckgo") || "duckduckgo",
+      apiKey: cfg.get<string>("webSearch.apiKey")?.trim() || undefined,
+    },
     approvalMode: (cfg.get<string>("approvalMode") as ApprovalMode) || "auto-edit",
     priceInPer1M: cfg.get<number>("pricing.inputPer1M") ?? 0,
     priceOutPer1M: cfg.get<number>("pricing.outputPer1M") ?? 0,

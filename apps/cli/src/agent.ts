@@ -21,6 +21,7 @@ import {
   agentSystemPrompt,
   createBuiltinTools,
   createCodebaseSearchTool,
+  createWebSearchTool,
   executionMessage,
   generatePlan,
   nvidiaProvider,
@@ -64,6 +65,12 @@ const embedModel = process.env.NVIDIA_EMBED_MODEL ?? "nvidia/nv-embedcode-7b-v1"
 const indexer = await Indexer.load(client, embedModel, root);
 const tools = createBuiltinTools(host);
 if (indexer.isBuilt) tools.push(createCodebaseSearchTool(indexer));
+tools.push(
+  createWebSearchTool({
+    provider: (process.env.WRIGHT_SEARCH_PROVIDER as "tavily" | "brave" | "duckduckgo") || undefined,
+    apiKey: process.env.WRIGHT_SEARCH_API_KEY,
+  }),
+);
 
 // MCP servers from <workspace>/.wright/mcp.json: {"servers": {name: {command, args?, env?}}}
 let mcpToolCount = 0;

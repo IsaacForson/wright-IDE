@@ -6,7 +6,7 @@
 /** Webview → extension */
 export type WebviewToHost =
   | { type: "ready" }
-  | { type: "send"; text: string; planFirst?: boolean }
+  | { type: "send"; text: string; planFirst?: boolean; images?: string[] }
   | { type: "executePlan" }
   | { type: "discardPlan" }
   | { type: "stop" }
@@ -27,7 +27,7 @@ export interface FileChangeItem {
 
 /** One entry in the rendered transcript. */
 export type UiItem =
-  | { kind: "text"; role: "user" | "assistant"; content: string }
+  | { kind: "text"; role: "user" | "assistant"; content: string; images?: string[] }
   | { kind: "tool"; id: string; name: string; argsSummary: string; status: "running" | "ok" | "error" | "declined"; output?: string };
 
 /** Extension → webview */

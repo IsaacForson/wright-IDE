@@ -83,35 +83,51 @@ export class Agent {
       this.messages.push({ role: "user", content: userText });
     }
 
+    // NVIDIA's gateway stalls when streaming a response to image input, so
+    // once a turn carries images we run it non-streamed for its lifetime.
+    const hasImages = this.messages.some(
+      (m) => m.role === "user" && Array.isArray(m.content) && m.content.some((p) => p.type === "image_url"),
+    );
+
     for (let iteration = 1; iteration <= maxIterations; iteration++) {
       this.messages = this.budget.trimToFit(this.messages);
-
-      const events = client.stream(
-        {
-          model,
-          messages: this.messages,
-          tools: [...this.tools.values()].map((t) => t.definition),
-          max_tokens: 8_192,
-        },
-        { signal: runOpts.signal },
-      );
+      const request = {
+        model,
+        messages: this.messages,
+        tools: [...this.tools.values()].map((t) => t.definition),
+        max_tokens: 8_192,
+      };
 
       let turnText = "";
       let toolCalls: ToolCall[] = [];
-      for await (const event of events) {
-        if (event.type === "text") {
-          turnText += event.text;
-          yield { type: "text", text: event.text };
-        } else if (event.type === "reasoning") {
-          yield { type: "reasoning", text: event.text };
-        } else if (event.type === "done") {
-          if (event.result.usage) {
-            totalUsage.prompt_tokens += event.result.usage.prompt_tokens;
-            totalUsage.completion_tokens += event.result.usage.completion_tokens;
-            totalUsage.total_tokens += event.result.usage.total_tokens;
+
+      if (hasImages) {
+        const result = await client.complete(request, { signal: runOpts.signal });
+        turnText = result.message.content ?? "";
+        if (turnText) yield { type: "text", text: turnText };
+        if (result.usage) {
+          totalUsage.prompt_tokens += result.usage.prompt_tokens;
+          totalUsage.completion_tokens += result.usage.completion_tokens;
+          totalUsage.total_tokens += result.usage.total_tokens;
+        }
+        this.messages.push(result.message);
+        toolCalls = result.message.tool_calls ?? [];
+      } else {
+        for await (const event of client.stream(request, { signal: runOpts.signal })) {
+          if (event.type === "text") {
+            turnText += event.text;
+            yield { type: "text", text: event.text };
+          } else if (event.type === "reasoning") {
+            yield { type: "reasoning", text: event.text };
+          } else if (event.type === "done") {
+            if (event.result.usage) {
+              totalUsage.prompt_tokens += event.result.usage.prompt_tokens;
+              totalUsage.completion_tokens += event.result.usage.completion_tokens;
+              totalUsage.total_tokens += event.result.usage.total_tokens;
+            }
+            this.messages.push(event.result.message);
+            toolCalls = event.result.message.tool_calls ?? [];
           }
-          this.messages.push(event.result.message);
-          toolCalls = event.result.message.tool_calls ?? [];
         }
       }
 

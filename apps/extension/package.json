@@ -100,6 +100,27 @@
           "default": "nvidia/nv-embedcode-7b-v1",
           "description": "Embedding model for codebase indexing (semantic search)."
         },
+        "wright.model.vision": {
+          "type": "string",
+          "default": "meta/llama-4-maverick-17b-128e-instruct",
+          "description": "Multimodal model used when the chat message includes an image. Must accept image input."
+        },
+        "wright.webSearch.provider": {
+          "type": "string",
+          "enum": ["duckduckgo", "tavily", "brave"],
+          "default": "duckduckgo",
+          "enumDescriptions": [
+            "Keyless, but only covers well-known topics (instant-answer API)",
+            "Full web search (requires an API key from tavily.com)",
+            "Full web search (requires a Brave Search API key)"
+          ],
+          "description": "Backend for the agent's web_search tool."
+        },
+        "wright.webSearch.apiKey": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "API key for the chosen web search provider (Tavily or Brave). Not needed for DuckDuckGo."
+        },
         "wright.approvalMode": {
           "type": "string",
           "enum": ["manual", "auto-edit", "auto"],

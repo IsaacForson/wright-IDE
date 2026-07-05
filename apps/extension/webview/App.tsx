@@ -33,6 +33,7 @@ export function App() {
   const [planPending, setPlanPending] = useState(false);
   const [approvalMode, setApprovalMode] = useState<"manual" | "auto-edit" | "auto">("auto-edit");
   const [sessionStats, setSessionStats] = useState<string | undefined>();
+  const [pendingImages, setPendingImages] = useState<string[]>([]);
   const scrollRef = useRef<HTMLDivElement>(null);
   // Streaming deltas mutate the last item; keep a ref to avoid stale closures.
   const itemsRef = useRef(items);
@@ -107,13 +108,35 @@ export function App() {
 
   const send = () => {
     const text = input.trim();
-    if (!text || busy) return;
+    const images = pendingImages;
+    if ((!text && images.length === 0) || busy) return;
     setInput("");
+    setPendingImages([]);
     setError(undefined);
     setStats(undefined);
     if (planPending) setPlanPending(false); // typed text = revision feedback
-    setItems((prev) => [...prev, { kind: "text", role: "user", content: text }]);
-    post({ type: "send", text, planFirst });
+    setItems((prev) => [...prev, { kind: "text", role: "user", content: text, images: images.length ? images : undefined }]);
+    post({ type: "send", text, planFirst, images: images.length ? images : undefined });
+  };
+
+  const addImageFile = (file: File) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      if (typeof reader.result === "string") setPendingImages((p) => [...p, reader.result as string]);
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const onPaste = (e: React.ClipboardEvent) => {
+    for (const item of Array.from(e.clipboardData.items)) {
+      if (item.type.startsWith("image/")) {
+        const file = item.getAsFile();
+        if (file) {
+          e.preventDefault();
+          addImageFile(file);
+        }
+      }
+    }
   };
 
   const lastIndex = items.length - 1;
@@ -134,6 +157,7 @@ export function App() {
               role={item.role}
               html={renderMarkdown(item.content || (busy && i === lastIndex ? "…" : ""))}
               streaming={busy && i === lastIndex && item.role === "assistant"}
+              images={item.images}
             />
           ) : (
             <ToolChip key={item.id + i} item={item} />
@@ -169,7 +193,24 @@ export function App() {
       )}
 
       <div className="composer">
+        {pendingImages.length > 0 && (
+          <div className="image-tray">
+            {pendingImages.map((src, i) => (
+              <div key={i} className="image-thumb">
+                <img src={src} alt="attachment" />
+                <button
+                  className="image-remove"
+                  title="Remove"
+                  onClick={() => setPendingImages((p) => p.filter((_, j) => j !== i))}
+                >
+                  ×
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
         <textarea
+          onPaste={onPaste}
           value={input}
           placeholder={
             planPending
@@ -188,6 +229,19 @@ export function App() {
           }}
         />
         <div className="composer-bar">
+          <label className="icon-btn" title="Attach an image (or paste one into the box)">
+            📎
+            <input
+              type="file"
+              accept="image/*"
+              multiple
+              style={{ display: "none" }}
+              onChange={(e) => {
+                for (const f of Array.from(e.target.files ?? [])) addImageFile(f);
+                e.target.value = "";
+              }}
+            />
+          </label>
           <label className="plan-toggle" title="Draft a plan for approval before the agent edits anything">
             <input type="checkbox" checked={planFirst} onChange={(e) => setPlanFirst(e.target.checked)} />
             Plan
@@ -224,7 +278,7 @@ export function App() {
               ◼ Stop
             </button>
           ) : (
-            <button className="send" onClick={send} disabled={!input.trim()}>
+            <button className="send" onClick={send} disabled={!input.trim() && pendingImages.length === 0}>
               Send ↩
             </button>
           )}
@@ -235,10 +289,17 @@ export function App() {
   );
 }
 
-function TextMessage(props: { role: "user" | "assistant"; html: string; streaming: boolean }) {
+function TextMessage(props: { role: "user" | "assistant"; html: string; streaming: boolean; images?: string[] }) {
   return (
     <div className={`message ${props.role}`}>
       <div className="message-role">{props.role === "user" ? "You" : "Wright"}</div>
+      {props.images && props.images.length > 0 && (
+        <div className="message-images">
+          {props.images.map((src, i) => (
+            <img key={i} src={src} alt="attachment" />
+          ))}
+        </div>
+      )}
       <div
         className={`message-body${props.streaming ? " streaming" : ""}`}
         dangerouslySetInnerHTML={{ __html: props.html }}
