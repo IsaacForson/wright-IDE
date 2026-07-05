@@ -29,6 +29,8 @@ export function App() {
   const [stats, setStats] = useState<string | undefined>();
   const [error, setError] = useState<string | undefined>();
   const [input, setInput] = useState("");
+  const [planFirst, setPlanFirst] = useState(false);
+  const [planPending, setPlanPending] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   // Streaming deltas mutate the last item; keep a ref to avoid stale closures.
   const itemsRef = useRef(items);
@@ -44,6 +46,10 @@ export function App() {
           setModels(msg.models);
           setBusy(msg.busy);
           setChanges(msg.changes);
+          setPlanPending(msg.planPending);
+          break;
+        case "planReady":
+          setPlanPending(true);
           break;
         case "changes":
           setChanges(msg.changes);
@@ -101,8 +107,9 @@ export function App() {
     setInput("");
     setError(undefined);
     setStats(undefined);
+    if (planPending) setPlanPending(false); // typed text = revision feedback
     setItems((prev) => [...prev, { kind: "text", role: "user", content: text }]);
-    post({ type: "send", text });
+    post({ type: "send", text, planFirst });
   };
 
   const lastIndex = items.length - 1;
@@ -134,10 +141,39 @@ export function App() {
 
       {changes.length > 0 && <ChangesPanel changes={changes} />}
 
+      {planPending && !busy && (
+        <div className="plan-bar">
+          <span className="plan-label">Plan ready — run it?</span>
+          <button
+            className="send"
+            onClick={() => {
+              setPlanPending(false);
+              post({ type: "executePlan" });
+            }}
+          >
+            ▶ Execute plan
+          </button>
+          <button
+            onClick={() => {
+              setPlanPending(false);
+              post({ type: "discardPlan" });
+            }}
+          >
+            Discard
+          </button>
+        </div>
+      )}
+
       <div className="composer">
         <textarea
           value={input}
-          placeholder="Give Wright a task… (Enter to send, Shift+Enter for newline)"
+          placeholder={
+            planPending
+              ? "Type feedback to revise the plan…"
+              : planFirst
+                ? "Describe a feature — Wright will plan before touching code…"
+                : "Give Wright a task… (Enter to send, Shift+Enter for newline)"
+          }
           rows={3}
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={(e) => {
@@ -148,6 +184,10 @@ export function App() {
           }}
         />
         <div className="composer-bar">
+          <label className="plan-toggle" title="Draft a plan for approval before the agent edits anything">
+            <input type="checkbox" checked={planFirst} onChange={(e) => setPlanFirst(e.target.checked)} />
+            Plan
+          </label>
           <select
             value={model}
             onChange={(e) => {

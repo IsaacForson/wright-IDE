@@ -14,9 +14,9 @@ export interface RetryOptions {
  * bad-request errors, and never retries after the caller aborts.
  */
 export async function withRetry<T>(fn: () => Promise<T>, opts: RetryOptions = {}): Promise<T> {
-  const maxAttempts = opts.maxAttempts ?? 4;
-  const baseDelayMs = opts.baseDelayMs ?? 500;
-  const maxDelayMs = opts.maxDelayMs ?? 20_000;
+  const maxAttempts = opts.maxAttempts ?? 5;
+  const baseDelayMs = opts.baseDelayMs ?? 750;
+  const maxDelayMs = opts.maxDelayMs ?? 45_000;
 
   let lastErr: unknown;
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
@@ -29,8 +29,14 @@ export async function withRetry<T>(fn: () => Promise<T>, opts: RetryOptions = {}
       if (!canRetry) throw err;
 
       const backoff = Math.min(maxDelayMs, baseDelayMs * 2 ** (attempt - 1));
-      const jitter = backoff * (0.5 + Math.random() * 0.5);
-      const delayMs = modelErr.retryAfter ? modelErr.retryAfter * 1000 : jitter;
+      let delayMs = backoff * (0.5 + Math.random() * 0.5);
+      if (modelErr.retryAfter) {
+        delayMs = modelErr.retryAfter * 1000;
+      } else if (modelErr.kind === "rate_limit") {
+        // Rate windows are usually per-minute; without a Retry-After hint,
+        // short exponential backoff just burns attempts. Wait meaningfully.
+        delayMs = Math.max(delayMs, 5_000 * attempt);
+      }
       opts.onRetry?.(modelErr, attempt, delayMs);
       await sleep(delayMs, opts.signal);
     }

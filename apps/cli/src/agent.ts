@@ -1,10 +1,11 @@
 /**
- * Phase 3 deliverable: the agent loop in a terminal.
+ * The agent loop in a terminal.
  *
  * Usage:
  *   pnpm agent -- --root <dir> "task"          one-shot task
+ *   pnpm agent -- --root <dir> --plan "task"   composer mode: plan → approve → execute
  *   pnpm agent -- --root <dir> -y "task"       auto-approve run_command (careful)
- *   pnpm agent -- --root <dir>                 interactive REPL
+ *   pnpm agent -- --root <dir>                 interactive REPL (/plan <task> works too)
  *
  * Defaults: --root defaults to the directory pnpm was invoked from.
  */
@@ -12,23 +13,37 @@
 import * as readline from "node:readline/promises";
 import {
   Agent,
+  ApprovalPolicy,
   ModelClient,
   ModelError,
   TrackedHost,
+  type ApprovalMode,
   agentSystemPrompt,
   createBuiltinTools,
   createCodebaseSearchTool,
+  executionMessage,
+  generatePlan,
   nvidiaProvider,
+  planContext,
 } from "@wright/core";
-import { Indexer, NodeWorkspaceHost } from "@wright/core/node";
+import { Indexer, NodeWorkspaceHost, loadRulesFile } from "@wright/core/node";
 import { requireEnv } from "./env.js";
 import * as path from "node:path";
 
 const argv = process.argv.slice(2);
 const autoApprove = argv.includes("-y");
+const planFirst = argv.includes("--plan");
 const rootIdx = argv.indexOf("--root");
+const modeIdx = argv.indexOf("--mode");
 const root = path.resolve(rootIdx !== -1 ? argv[rootIdx + 1]! : process.env.INIT_CWD ?? process.cwd());
-const positional = argv.filter((a, i) => a !== "-y" && a !== "--root" && i !== rootIdx + 1);
+const mode: ApprovalMode = autoApprove
+  ? "auto"
+  : modeIdx !== -1 && ["manual", "auto-edit", "auto"].includes(argv[modeIdx + 1]!)
+    ? (argv[modeIdx + 1] as ApprovalMode)
+    : "auto-edit";
+const positional = argv.filter(
+  (a, i) => a !== "-y" && a !== "--plan" && a !== "--root" && a !== "--mode" && i !== rootIdx + 1 && i !== modeIdx + 1,
+);
 const oneShot = positional[0];
 
 const env = requireEnv();
@@ -49,25 +64,36 @@ const indexer = await Indexer.load(client, embedModel, root);
 const tools = createBuiltinTools(host);
 if (indexer.isBuilt) tools.push(createCodebaseSearchTool(indexer));
 
+const policy = new ApprovalPolicy({ mode });
+const rules = await loadRulesFile(root);
+
 const agent = new Agent({
   client,
   model: env.model,
   tools,
-  systemPrompt: agentSystemPrompt({ workspaceName: path.basename(root) }),
+  systemPrompt: agentSystemPrompt({ workspaceName: path.basename(root), rules }),
   approve: async (name, args) => {
-    if (autoApprove) return true;
-    const answer = await rl.question(yellow(`\napprove ${name}(${JSON.stringify(args)})? [y/N] `));
-    return answer.trim().toLowerCase() === "y";
+    const decision = policy.decide(name, args);
+    if (decision.action === "allow") return true;
+    const detail = name === "run_command" ? String(args.command ?? "") : JSON.stringify(args).slice(0, 160);
+    const why = decision.reason ? dim(` (${decision.reason})`) : "";
+    try {
+      const answer = await rl.question(yellow(`\napprove ${name}: ${detail}${why} ? [y/N] `));
+      return answer.trim().toLowerCase() === "y";
+    } catch {
+      return false; // stdin closed → decline
+    }
   },
 });
 
-console.log(`Wright agent — model: ${env.model} — workspace: ${root}`);
+console.log(`Wright agent — model: ${env.model} — mode: ${mode} — workspace: ${root}`);
+if (rules) console.log(dim("project rules file loaded"));
 console.log(
   indexer.isBuilt
     ? `codebase index: ${indexer.store.fileCount} files / ${indexer.store.chunkCount} chunks (semantic search ON)`
     : "codebase index: none (run `pnpm index -- --root <dir>` to enable semantic search)",
 );
-if (autoApprove) console.log(yellow("auto-approve is ON: shell commands run without confirmation"));
+if (mode === "auto") console.log(yellow("auto mode: only deny-listed commands and protected paths will ask"));
 console.log();
 
 async function runTurn(task: string): Promise<void> {
@@ -154,8 +180,48 @@ async function handleSlashCommand(input: string): Promise<boolean> {
   }
 }
 
+/** Composer flow: draft a plan, let the user approve/revise/quit, then execute. */
+async function runComposer(task: string): Promise<void> {
+  let priorPlan: string | undefined;
+  let feedback: string | undefined;
+  while (true) {
+    console.log(dim("\n─ drafting plan ─\n"));
+    const context = indexer.isBuilt ? await planContext(indexer, task) : undefined;
+    let plan: string;
+    try {
+      plan = await generatePlan(client, env.model, { task, context, priorPlan, feedback }, {
+        onEvent: (e) => {
+          if (e.type === "text") process.stdout.write(e.text);
+        },
+      });
+    } catch (err) {
+      console.log(red(`\nplan failed: ${err instanceof ModelError ? err.message : String(err)}`));
+      return;
+    }
+    let answer: string;
+    try {
+      answer = (await rl.question(yellow("\n\n[e]xecute · [r]evise · [q]uit > "))).trim().toLowerCase();
+    } catch {
+      console.log(dim("\nstdin closed — plan discarded"));
+      return;
+    }
+    if (answer === "e") {
+      await runTurn(executionMessage(task, plan));
+      return;
+    }
+    if (answer === "r") {
+      priorPlan = plan;
+      feedback = (await rl.question(cyan("what should change? > "))).trim();
+      continue;
+    }
+    console.log(dim("plan discarded"));
+    return;
+  }
+}
+
 if (oneShot) {
-  await runTurn(oneShot);
+  if (planFirst) await runComposer(oneShot);
+  else await runTurn(oneShot);
   rl.close();
 } else {
   while (true) {
@@ -166,6 +232,10 @@ if (oneShot) {
       break;
     }
     if (!input || input === "/exit") break;
+    if (input.startsWith("/plan ")) {
+      await runComposer(input.slice(6).trim());
+      continue;
+    }
     if (input.startsWith("/")) {
       if (await handleSlashCommand(input)) continue;
     }

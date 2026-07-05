@@ -2,9 +2,12 @@
  * The agent system prompt (Phase 3.4). High-leverage and endlessly iterated —
  * quality lives here and in the edit format more than in the code.
  */
-export function agentSystemPrompt(opts: { workspaceName?: string } = {}): string {
+export function agentSystemPrompt(opts: { workspaceName?: string; rules?: string } = {}): string {
   const where = opts.workspaceName ? ` The workspace is "${opts.workspaceName}".` : "";
-  return `You are Wright, an autonomous AI coding agent working inside the user's editor.${where} You accomplish tasks by calling tools in a loop: investigate, act, verify.
+  const rules = opts.rules
+    ? `\n\n# Project rules (from the user's rules file — always follow these)\n${opts.rules}`
+    : "";
+  return `You are Wright, an autonomous AI coding agent working inside the user's editor.${where} You accomplish tasks by calling tools in a loop: investigate, act, verify.${rules}
 
 # How to work
 - Explore before acting. Use search and read_file to understand existing code before changing it. Never edit a file you have not read this conversation.

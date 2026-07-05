@@ -2,11 +2,17 @@ import * as vscode from "vscode";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
+import type { ApprovalMode } from "@wright/core";
+
 export interface WrightConfig {
   apiKey: string | undefined;
   chatModel: string;
   fastModel: string;
   embedModel: string;
+  approvalMode: ApprovalMode;
+  /** USD per 1M tokens; 0 disables the cost estimate. */
+  priceInPer1M: number;
+  priceOutPer1M: number;
 }
 
 /**
@@ -22,6 +28,9 @@ export function getConfig(): WrightConfig {
     chatModel: cfg.get<string>("model.chat") || "z-ai/glm-5.2",
     fastModel: cfg.get<string>("model.fast") || "meta/llama-3.1-8b-instruct",
     embedModel: cfg.get<string>("model.embed") || "nvidia/nv-embedcode-7b-v1",
+    approvalMode: (cfg.get<string>("approvalMode") as ApprovalMode) || "auto-edit",
+    priceInPer1M: cfg.get<number>("pricing.inputPer1M") ?? 0,
+    priceOutPer1M: cfg.get<number>("pricing.outputPer1M") ?? 0,
   };
 }
 

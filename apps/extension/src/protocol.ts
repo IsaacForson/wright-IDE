@@ -6,10 +6,13 @@
 /** Webview → extension */
 export type WebviewToHost =
   | { type: "ready" }
-  | { type: "send"; text: string }
+  | { type: "send"; text: string; planFirst?: boolean }
+  | { type: "executePlan" }
+  | { type: "discardPlan" }
   | { type: "stop" }
   | { type: "newChat" }
   | { type: "setModel"; model: string }
+  | { type: "setApprovalMode"; mode: "manual" | "auto-edit" | "auto" }
   | { type: "openDiff"; path: string }
   | { type: "keepFile"; path: string }
   | { type: "revertFile"; path: string }
@@ -29,7 +32,19 @@ export type UiItem =
 
 /** Extension → webview */
 export type HostToWebview =
-  | { type: "state"; items: UiItem[]; model: string; models: string[]; busy: boolean; changes: FileChangeItem[] }
+  | {
+      type: "state";
+      items: UiItem[];
+      model: string;
+      models: string[];
+      busy: boolean;
+      changes: FileChangeItem[];
+      planPending: boolean;
+      approvalMode: "manual" | "auto-edit" | "auto";
+      /** e.g. "session: 41.2k↑ 3.1k↓ · ~$0.02" */
+      sessionStats?: string;
+    }
+  | { type: "planReady" }
   | { type: "assistantStart" }
   | { type: "delta"; text: string }
   | { type: "toolStart"; id: string; name: string; argsSummary: string }

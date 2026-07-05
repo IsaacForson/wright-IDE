@@ -19,8 +19,9 @@ export interface AgentOptions {
   maxIterations?: number;
   budget?: ContextBudget;
   /**
-   * Approval gate: called before any tool with requiresApproval. Return
-   * false to skip execution (the model is told the user declined).
+   * Approval gate: called before EVERY tool call. The host decides (via an
+   * ApprovalPolicy + UI prompt) whether to allow. Return false to skip
+   * execution (the model is told the user declined). Omit to allow all.
    */
   approve?: (name: string, args: Record<string, unknown>) => Promise<boolean>;
 }
@@ -49,6 +50,11 @@ export class Agent {
 
   reset(): void {
     this.messages = this.messages.slice(0, 1);
+  }
+
+  /** Restore a persisted conversation (Phase 10). Keeps the current system prompt. */
+  restoreHistory(messages: ChatMessage[]): void {
+    this.messages = [this.messages[0]!, ...messages.filter((m) => m.role !== "system")];
   }
 
   /** Run one user turn to completion, yielding events as they happen. */
@@ -138,7 +144,7 @@ export class Agent {
       };
     }
 
-    if (tool.requiresApproval && this.opts.approve) {
+    if (this.opts.approve) {
       const approved = await this.opts.approve(call.function.name, args.value);
       if (!approved) {
         return {

@@ -1,15 +1,21 @@
 import * as vscode from "vscode";
 import {
   Agent,
+  ApprovalPolicy,
   ModelClient,
   ModelError,
   TrackedHost,
   agentSystemPrompt,
+  type ApprovalMode,
+  type ChatMessage,
   createBuiltinTools,
   createCodebaseSearchTool,
+  executionMessage,
+  generatePlan,
   nvidiaProvider,
+  planContext,
 } from "@wright/core";
-import { NodeWorkspaceHost } from "@wright/core/node";
+import { NodeWorkspaceHost, loadRulesFile } from "@wright/core/node";
 import { IndexService } from "./IndexService.js";
 import { getConfig } from "./config.js";
 import { workspaceRoot } from "./workspace.js";
@@ -37,12 +43,43 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private abort: AbortController | undefined;
   /** Parallel transcript for rebuilding the webview on reload. */
   private items: UiItem[] = [];
+  /** Composer: the drafted plan awaiting user approval. */
+  private pendingPlan: { task: string; plan: string } | undefined;
+  private approvalMode: ApprovalMode;
+  /** Cost meter (Phase 9): tokens spent this session. */
+  private sessionUsage = { input: 0, output: 0 };
 
   constructor(
     private readonly extensionUri: vscode.Uri,
     private readonly indexService: IndexService,
+    /** Workspace-scoped persistence for chat sessions (Phase 10). */
+    private readonly memento: vscode.Memento,
   ) {
     this.model = getConfig().chatModel;
+    this.approvalMode = getConfig().approvalMode;
+    this.restoreSession();
+  }
+
+  // ── Session persistence (Phase 10) ────────────────────────────────────
+
+  private restoreSession(): void {
+    const saved = this.memento.get<{ items: UiItem[]; messages: ChatMessage[]; model: string }>("wright.session");
+    if (!saved || saved.items.length === 0) return;
+    this.items = saved.items;
+    this.model = saved.model || this.model;
+    this.savedMessages = saved.messages;
+  }
+
+  /** Agent history to restore once the agent is first built this session. */
+  private savedMessages: ChatMessage[] | undefined;
+
+  private persistSession(): void {
+    const messages = this.agent ? [...this.agent.history] : (this.savedMessages ?? []);
+    void this.memento.update("wright.session", {
+      items: this.items.slice(-200),
+      messages: messages.slice(-100),
+      model: this.model,
+    });
   }
 
   /** Serves original file content to the left side of diff views. */
@@ -65,7 +102,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this.agent = undefined;
     // Changes stay on disk; starting a new chat just stops tracking them.
     this.tracker = undefined;
+    this.pendingPlan = undefined;
+    this.savedMessages = undefined;
     this.items = [];
+    this.persistSession();
     this.sendState(false);
   }
 
@@ -82,7 +122,23 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       models,
       busy,
       changes: this.tracker?.changes() ?? [],
+      planPending: this.pendingPlan !== undefined,
+      approvalMode: this.approvalMode,
+      sessionStats: this.formatSessionStats(),
     });
+  }
+
+  private formatSessionStats(): string | undefined {
+    const { input, output } = this.sessionUsage;
+    if (input + output === 0) return undefined;
+    const config = getConfig();
+    const fmt = (n: number) => (n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n));
+    let stats = `session: ${fmt(input)}↑ ${fmt(output)}↓`;
+    if (config.priceInPer1M > 0 || config.priceOutPer1M > 0) {
+      const usd = (input / 1e6) * config.priceInPer1M + (output / 1e6) * config.priceOutPer1M;
+      stats += ` · ~$${usd.toFixed(usd < 0.1 ? 3 : 2)}`;
+    }
+    return stats;
   }
 
   private sendChanges(): void {
@@ -104,8 +160,31 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         this.model = msg.model;
         this.agent = undefined; // next turn builds a fresh agent on the new model
         return;
+      case "setApprovalMode":
+        this.approvalMode = msg.mode;
+        void vscode.workspace.getConfiguration("wright").update("approvalMode", msg.mode);
+        return;
       case "send":
-        await this.handleSend(msg.text);
+        if (this.pendingPlan) {
+          // Typing while a plan awaits approval = revision feedback.
+          await this.handlePlan(this.pendingPlan.task, msg.text);
+        } else if (msg.planFirst) {
+          await this.handlePlan(msg.text);
+        } else {
+          await this.handleSend(msg.text);
+        }
+        return;
+      case "executePlan": {
+        const pending = this.pendingPlan;
+        this.pendingPlan = undefined;
+        this.sendState(false);
+        if (pending) await this.handleSend(executionMessage(pending.task, pending.plan), { displayText: "▶ Execute plan" });
+        return;
+      }
+      case "discardPlan":
+        this.pendingPlan = undefined;
+        this.items.push({ kind: "text", role: "assistant", content: "_Plan discarded._" });
+        this.sendState(false);
         return;
       case "openDiff":
         await this.openDiff(msg.path);
@@ -155,24 +234,92 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     const tools = createBuiltinTools(this.tracker);
     const indexer = await this.indexService.ensure(client, root.fsPath);
     if (indexer) tools.push(createCodebaseSearchTool(indexer));
-    return new Agent({
+    const rules = await loadRulesFile(root.fsPath);
+    const agent = new Agent({
       client,
       model: this.model,
       tools,
-      systemPrompt: agentSystemPrompt({ workspaceName: vscode.workspace.name }),
+      systemPrompt: agentSystemPrompt({ workspaceName: vscode.workspace.name, rules }),
       approve: async (name, args) => {
-        const detail = name === "run_command" ? String(args.command ?? "") : JSON.stringify(args);
+        const decision = new ApprovalPolicy({ mode: this.approvalMode }).decide(name, args);
+        if (decision.action === "allow") return true;
+        const detail = name === "run_command" ? String(args.command ?? "") : `${name} → ${String(args.path ?? "")}`;
+        const why = decision.reason ? ` (${decision.reason})` : "";
         const choice = await vscode.window.showWarningMessage(
-          `Wright wants to run: ${detail}`,
+          `Wright wants to run: ${detail}${why}`,
           { modal: true },
-          "Run",
+          "Allow",
         );
-        return choice === "Run";
+        return choice === "Allow";
       },
     });
+    // Rehydrate a persisted conversation into the fresh agent (Phase 10).
+    if (this.savedMessages?.length) {
+      agent.restoreHistory(this.savedMessages);
+      this.savedMessages = undefined;
+    }
+    return agent;
   }
 
-  private async handleSend(text: string): Promise<void> {
+  /** Composer: draft (or revise) a plan and hold it for approval. */
+  private async handlePlan(task: string, feedback?: string): Promise<void> {
+    if (this.abort) return;
+    const config = getConfig();
+    if (!config.apiKey) {
+      this.post({ type: "error", message: "No NVIDIA API key found. Set `wright.nvidia.apiKey` in Settings." });
+      return;
+    }
+    const root = workspaceRoot();
+    if (!root) {
+      this.post({ type: "error", message: "Open a folder first — the composer needs a workspace." });
+      return;
+    }
+
+    const priorPlan = feedback ? this.pendingPlan?.plan : undefined;
+    this.pendingPlan = undefined;
+    this.items.push({ kind: "text", role: "user", content: feedback ?? task });
+    this.sendState(true);
+
+    const client = new ModelClient(nvidiaProvider({ apiKey: config.apiKey, chatModel: this.model }));
+    this.abort = new AbortController();
+    const planItem: Extract<UiItem, { kind: "text" }> = { kind: "text", role: "assistant", content: "" };
+    this.items.push(planItem);
+    this.post({ type: "assistantStart" });
+
+    try {
+      const indexer = await this.indexService.ensure(client, root.fsPath);
+      const context = indexer ? await planContext(indexer, task, this.abort.signal) : undefined;
+      const plan = await generatePlan(
+        client,
+        this.model,
+        { task, context, priorPlan, feedback },
+        {
+          signal: this.abort.signal,
+          onEvent: (e) => {
+            if (e.type === "text") {
+              planItem.content += e.text;
+              this.post({ type: "delta", text: e.text });
+            }
+          },
+        },
+      );
+      this.pendingPlan = { task, plan };
+      this.post({ type: "turnDone" });
+      this.post({ type: "planReady" });
+    } catch (err) {
+      if (err instanceof ModelError && err.kind === "aborted") {
+        this.post({ type: "turnDone", stats: "cancelled" });
+      } else {
+        this.post({ type: "error", message: err instanceof ModelError ? err.message : String(err) });
+        this.post({ type: "turnDone" });
+      }
+    } finally {
+      this.abort = undefined;
+      this.sendState(false);
+    }
+  }
+
+  private async handleSend(text: string, opts: { displayText?: string } = {}): Promise<void> {
     if (this.abort) return; // already running; UI disables send, but guard anyway
 
     const config = getConfig();
@@ -192,7 +339,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       return;
     }
 
-    this.items.push({ kind: "text", role: "user", content: text });
+    this.items.push({ kind: "text", role: "user", content: opts.displayText ?? text });
     this.sendState(true);
     text = await this.expandMentions(text);
 
@@ -231,6 +378,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             break;
           }
           case "done": {
+            this.sessionUsage.input += event.usage.prompt_tokens;
+            this.sessionUsage.output += event.usage.completion_tokens;
             const secs = ((Date.now() - start) / 1000).toFixed(1);
             const stats =
               event.usage.total_tokens > 0
@@ -251,6 +400,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       }
     } finally {
       this.abort = undefined;
+      this.persistSession();
       this.sendState(false);
     }
   }
