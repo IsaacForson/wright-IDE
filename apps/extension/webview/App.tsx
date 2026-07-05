@@ -94,6 +94,7 @@ const RESEARCH_OPTIONS: SelectOption[] = [
 
 function modelLabel(id: string): string {
   if (id === "auto") return "Auto";
+  if (id.startsWith("ollama:")) return id.slice(7).replace(/:latest$/, "");
   return id.split("/").pop() ?? id;
 }
 
@@ -797,12 +798,22 @@ export function App() {
             <Select
               value={model}
               options={[
-                ...models.map((m) => ({ value: m, label: modelLabel(m), icon: m === "auto" ? "sparkle" : undefined, hint: MODEL_HINTS[m] })),
-                { value: "__manage__", label: "Manage models…", icon: "gear" },
+                ...models.map((m) => ({
+                  value: m,
+                  label: modelLabel(m),
+                  icon: m === "auto" ? "sparkle" : m.startsWith("ollama:") ? "terminal" : undefined,
+                  hint: m.startsWith("ollama:") ? "local · free" : MODEL_HINTS[m],
+                })),
+                { value: "__manage__", label: "Manage cloud models…", icon: "gear" },
+                { value: "__local__", label: "Local models…", icon: "plus", hint: "download & use" },
               ]}
               onChange={(v) => {
                 if (v === "__manage__") {
                   post({ type: "manageModels" });
+                  return;
+                }
+                if (v === "__local__") {
+                  post({ type: "manageLocalModels" });
                   return;
                 }
                 setModel(v);

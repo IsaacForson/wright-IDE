@@ -22,6 +22,7 @@ export type WebviewToHost =
   | { type: "send"; text: string; mode: ChatMode; research: ResearchMode; images?: string[]; files?: FileAttachment[] }
   | { type: "openSettings" }
   | { type: "manageModels" }
+  | { type: "manageLocalModels" }
   | { type: "executePlan" }
   | { type: "discardPlan" }
   | { type: "stop" }

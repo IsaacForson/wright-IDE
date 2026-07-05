@@ -25,6 +25,7 @@ import { IndexService } from "./IndexService.js";
 import { createDiagnosticsTool } from "./diagnosticsTool.js";
 import { TerminalHost } from "./terminalHost.js";
 import { DEFAULT_MODEL_LIST, getConfig } from "./config.js";
+import { RECOMMENDED_LOCAL_MODELS, deleteModel, ensureOllamaRunning, listLocalModels, pullModel } from "./ollama.js";
 import { getActiveFile, workspaceRoot } from "./workspace.js";
 import * as os from "node:os";
 import type { ChatMode, FileAttachment, HostToWebview, ResearchMode, UiItem, WebviewToHost } from "./protocol.js";
@@ -73,6 +74,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private fileListCache: { entries: Array<{ path: string; type: "file" | "dir" }>; at: number } | undefined;
   /** Where the tracker/tools are rooted: the workspace, or ~ when none is open. */
   private rootPath: string | undefined;
+  /** Installed Ollama models, refreshed opportunistically for the picker. */
+  private localModels: string[] = [];
   /** A big-looking agent task parked while the user decides Plan vs Agent. */
   private pendingSuggest: { text: string; images?: string[]; files?: FileAttachment[]; research: ResearchMode } | undefined;
 
@@ -242,9 +245,20 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this.view?.webview.postMessage(msg);
   }
 
+  /** Refresh the local-model list and push fresh state when it changes. */
+  private refreshLocalModels(): void {
+    void listLocalModels().then((list) => {
+      const names = list.map((m) => m.name);
+      if (JSON.stringify(names) !== JSON.stringify(this.localModels)) {
+        this.localModels = names;
+        this.sendState(this.abort !== undefined);
+      }
+    });
+  }
+
   private sendState(busy: boolean): void {
     const config = getConfig();
-    const models = ["auto", ...config.modelList];
+    const models = ["auto", ...config.modelList, ...this.localModels.map((m) => `ollama:${m}`)];
     if (!models.includes(this.model)) models.splice(1, 0, this.model);
     this.post({
       type: "state",
@@ -281,6 +295,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     switch (msg.type) {
       case "ready":
         this.sendState(this.abort !== undefined);
+        this.refreshLocalModels();
         return;
       case "newChat":
         this.newChat();
@@ -318,6 +333,16 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       case "openSettings":
         await vscode.commands.executeCommand("workbench.action.openSettings", "wright");
         return;
+      case "manageLocalModels": {
+        // One-click local models: pick installed to use it, pick a
+        // recommended one to download it — no settings involved.
+        if (!(await ensureOllamaRunning())) {
+          vscode.window.showWarningMessage("Wright: Ollama isn't running and couldn't be started. Install it from ollama.com.");
+          return;
+        }
+        await this.showLocalModelPicker();
+        return;
+      }
       case "manageModels": {
         // Checkbox list: checked models appear in the picker.
         const config = getConfig();
@@ -597,10 +622,72 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     }
   }
 
+  /**
+   * Local-model manager: pick installed → use it; pick recommended →
+   * download then use; 🗑 button on installed rows deletes from disk.
+   */
+  private async showLocalModelPicker(): Promise<void> {
+    const installed = await listLocalModels();
+    const installedNames = new Set(installed.map((m) => m.name));
+    type Item = vscode.QuickPickItem & { modelName?: string };
+    const trash = new vscode.ThemeIcon("trash");
+    const items: Item[] = [
+      ...installed.map((m) => ({
+        label: m.name,
+        modelName: m.name,
+        description: `installed${m.sizeGb ? ` · ${m.sizeGb} GB` : ""}${m.tools ? " · tools" : ""}`,
+        buttons: [{ iconPath: trash, tooltip: `Delete ${m.name} from disk` }],
+      })),
+      { label: "Download", kind: vscode.QuickPickItemKind.Separator },
+      ...RECOMMENDED_LOCAL_MODELS.filter((r) => !installedNames.has(r.id)).map((r) => ({
+        label: r.id,
+        modelName: r.id,
+        description: `⇩ ${r.blurb}`,
+      })),
+    ];
+
+    const qp = vscode.window.createQuickPick<Item>();
+    qp.title = "Wright: local models (Ollama) — pick to use, download, or 🗑 delete";
+    qp.items = items;
+    qp.onDidTriggerItemButton(async (e) => {
+      const name = e.item.modelName;
+      if (!name) return;
+      const confirm = await vscode.window.showWarningMessage(
+        `Delete ${name} from disk${e.item.description?.includes("GB") ? ` (frees ${e.item.description.match(/([\d.]+ GB)/)?.[1] ?? "space"})` : ""}?`,
+        { modal: true },
+        "Delete",
+      );
+      if (confirm !== "Delete") return;
+      if (await deleteModel(name)) {
+        vscode.window.setStatusBarMessage(`Wright: deleted ${name}`, 4_000);
+        if (this.model === `ollama:${name}`) this.model = "auto";
+        this.refreshLocalModels();
+        qp.hide();
+        await this.showLocalModelPicker(); // reopen with the fresh list
+      } else {
+        vscode.window.showErrorMessage(`Wright: could not delete ${name}.`);
+      }
+    });
+    qp.onDidAccept(async () => {
+      const pick = qp.selectedItems[0];
+      qp.hide();
+      if (!pick?.modelName) return;
+      if (!installedNames.has(pick.modelName)) {
+        if (!(await pullModel(pick.modelName))) return;
+      }
+      this.model = `ollama:${pick.modelName}`;
+      this.agentBuiltFor = undefined;
+      this.refreshLocalModels();
+      this.sendState(this.abort !== undefined);
+    });
+    qp.onDidHide(() => qp.dispose());
+    qp.show();
+  }
+
   /** Resolve "auto" to a concrete model for this turn (Phase 10 routing). */
   private resolveModel(mode: AgentMode, hasImages: boolean): string {
     const config = getConfig();
-    if (hasImages) return config.visionModel;
+    if (hasImages) return config.visionModel; // local models here can't see images
     if (this.model !== "auto") return this.model;
     return mode === "ask" ? config.fastModel : config.chatModel;
   }
@@ -642,25 +729,45 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this.rootPath = root?.fsPath ?? os.homedir();
     const config = getConfig();
     const wcfg = vscode.workspace.getConfiguration("wright");
-    // Failover chain: NVIDIA (key pool) → user's extra providers → local Ollama.
-    const targets: FailoverTarget[] = [
-      { name: "nvidia", client: new ModelClient(nvidiaProvider({ apiKeys: config.apiKeys, chatModel: model, fastModel: config.fastModel })) },
-    ];
-    for (const p of wcfg.get<Array<{ name: string; baseUrl: string; apiKey?: string; model: string }>>("fallback.providers") ?? []) {
-      if (!p?.baseUrl || !p.model) continue;
-      targets.push({
-        name: p.name || p.baseUrl,
-        model: p.model,
-        client: new ModelClient(openAICompatibleProvider({ id: p.name || "custom", name: p.name || "custom", baseUrl: p.baseUrl, apiKey: p.apiKey, chatModel: p.model })),
-      });
-    }
-    if (wcfg.get<boolean>("fallback.ollama") ?? true) {
-      const ollamaModel = wcfg.get<string>("fallback.ollamaModel") || "qwen-coder-7b:latest";
+    const targets: FailoverTarget[] = [];
+    let agentModel = model;
+    if (model.startsWith("ollama:")) {
+      // User explicitly picked a local model: it's the primary; NVIDIA backs it up.
+      agentModel = model.slice("ollama:".length);
+      if (!(await ensureOllamaRunning())) {
+        throw new Error("Ollama isn't running and couldn't be started — install it from ollama.com or pick a cloud model.");
+      }
       targets.push({
         name: "ollama (local)",
-        model: ollamaModel,
-        client: new ModelClient(openAICompatibleProvider({ id: "ollama", name: "Ollama", baseUrl: "http://localhost:11434/v1", chatModel: ollamaModel })),
+        model: agentModel,
+        client: new ModelClient(openAICompatibleProvider({ id: "ollama", name: "Ollama", baseUrl: "http://localhost:11434/v1", chatModel: agentModel })),
       });
+      targets.push({
+        name: "nvidia",
+        model: config.chatModel,
+        client: new ModelClient(nvidiaProvider({ apiKeys: config.apiKeys, chatModel: config.chatModel, fastModel: config.fastModel })),
+      });
+    } else {
+      // Failover chain: NVIDIA (key pool) → user's extra providers → local Ollama.
+      targets.push({ name: "nvidia", client: new ModelClient(nvidiaProvider({ apiKeys: config.apiKeys, chatModel: model, fastModel: config.fastModel })) });
+    }
+    if (!model.startsWith("ollama:")) {
+      for (const p of wcfg.get<Array<{ name: string; baseUrl: string; apiKey?: string; model: string }>>("fallback.providers") ?? []) {
+        if (!p?.baseUrl || !p.model) continue;
+        targets.push({
+          name: p.name || p.baseUrl,
+          model: p.model,
+          client: new ModelClient(openAICompatibleProvider({ id: p.name || "custom", name: p.name || "custom", baseUrl: p.baseUrl, apiKey: p.apiKey, chatModel: p.model })),
+        });
+      }
+      if (wcfg.get<boolean>("fallback.ollama") ?? true) {
+        const ollamaModel = wcfg.get<string>("fallback.ollamaModel") || "qwen-coder-7b:latest";
+        targets.push({
+          name: "ollama (local)",
+          model: ollamaModel,
+          client: new ModelClient(openAICompatibleProvider({ id: "ollama", name: "Ollama", baseUrl: "http://localhost:11434/v1", chatModel: ollamaModel })),
+        });
+      }
     }
     const client = new FailoverModelClient(targets, (from, to) =>
       vscode.window.setStatusBarMessage(`Wright: ${from} unavailable → switched to ${to}`, 6_000),
@@ -668,7 +775,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this.tracker ??= new TrackedHost(new NodeWorkspaceHost(this.rootPath));
     // Commands run in a visible "Wright" terminal; edits still go through the tracker.
     let tools = createBuiltinTools(new TerminalHost(this.tracker, this.rootPath));
-    const indexer = root ? await this.indexService.ensure(client, root.fsPath) : undefined;
+    // Embeddings always ride NVIDIA (local models don't serve our embed model).
+    const embedClient = new ModelClient(nvidiaProvider({ apiKeys: config.apiKeys, chatModel: config.chatModel }));
+    const indexer = root ? await this.indexService.ensure(embedClient, root.fsPath) : undefined;
     if (indexer) tools.push(createCodebaseSearchTool(indexer));
     tools.push(createWebSearchTool(config.webSearch));
     tools.push(createReadUrlTool());
@@ -696,7 +805,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
     const agent = new Agent({
       client,
-      model,
+      model: agentModel,
       tools,
       // Deep research fans out into many search rounds; give it headroom.
       maxIterations: research === "deep" ? 60 : research === "research" ? 40 : 25,
