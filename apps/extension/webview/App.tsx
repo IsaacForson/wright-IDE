@@ -42,10 +42,29 @@ marked.use({
   renderer: {
     code({ text, lang }: { text: string; lang?: string }) {
       const raw = text.replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
-      return `<pre><code class="hljs">${highlightCode(raw, lang)}</code></pre>`;
+      const encoded = btoa(unescape(encodeURIComponent(raw)));
+      return `<div class="code-card" data-code="${encoded}"><div class="code-actions"><button data-act="apply" title="Apply to the active file">Apply</button><button data-act="copy" title="Copy code">Copy</button></div><pre><code class="hljs">${highlightCode(raw, lang)}</code></pre></div>`;
     },
   },
 });
+
+/** Event delegation for the Apply/Copy buttons injected into markdown. */
+function onMessagesClick(e: React.MouseEvent) {
+  const btn = (e.target as HTMLElement).closest("button[data-act]") as HTMLElement | null;
+  if (!btn) return;
+  const card = btn.closest(".code-card") as HTMLElement | null;
+  if (!card?.dataset.code) return;
+  const code = decodeURIComponent(escape(atob(card.dataset.code)));
+  if (btn.dataset.act === "copy") {
+    post({ type: "copyText", text: code });
+    btn.textContent = "Copied ✓";
+    setTimeout(() => (btn.textContent = "Copy"), 1500);
+  } else if (btn.dataset.act === "apply") {
+    post({ type: "applyCode", code });
+    btn.textContent = "Applying…";
+    setTimeout(() => (btn.textContent = "Apply"), 4000);
+  }
+}
 
 function renderMarkdown(text: string): string {
   const escaped = text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
@@ -149,6 +168,8 @@ export function App() {
   const [suggestLeft, setSuggestLeft] = useState<number | undefined>();
   /** Chat history overlay; undefined = closed. */
   const [sessions, setSessions] = useState<Array<{ id: string; title: string; updatedAt: number; current: boolean }> | undefined>();
+  /** Per-hunk review data for one expanded file in the Changes panel. */
+  const [fileHunks, setFileHunks] = useState<{ path: string; hunks: Array<{ header: string; lines: string[] }> } | undefined>();
 
   // Countdown for the plan suggestion: at 0, auto-continue with the agent.
   useEffect(() => {
@@ -210,6 +231,9 @@ export function App() {
           break;
         case "changes":
           setChanges(msg.changes);
+          break;
+        case "fileHunks":
+          setFileHunks({ path: msg.path, hunks: msg.hunks });
           break;
         case "sessions":
           setSessions(msg.sessions);
@@ -526,7 +550,7 @@ export function App() {
         </div>
       )}
 
-      <div className="messages" ref={scrollRef}>
+      <div className="messages" ref={scrollRef} onClick={onMessagesClick}>
         {items.length === 0 && (
           <div className="empty">
             <div className="empty-logo">W</div>
@@ -568,7 +592,7 @@ export function App() {
         {error && <div className="error-banner"><Icon name="x" size={13} />{error}</div>}
       </div>
 
-      {changes.length > 0 && <ChangesPanel changes={changes} />}
+      {changes.length > 0 && <ChangesPanel changes={changes} fileHunks={fileHunks} onCollapse={() => setFileHunks(undefined)} />}
 
       {suggestLeft !== undefined && (
         <div className="plan-bar suggest">
@@ -707,8 +731,18 @@ export function App() {
             />
             <Select
               value={model}
-              options={models.map((m) => ({ value: m, label: modelLabel(m), icon: m === "auto" ? "sparkle" : undefined, hint: MODEL_HINTS[m] }))}
-              onChange={(v) => { setModel(v); post({ type: "setModel", model: v }); }}
+              options={[
+                ...models.map((m) => ({ value: m, label: modelLabel(m), icon: m === "auto" ? "sparkle" : undefined, hint: MODEL_HINTS[m] })),
+                { value: "__manage__", label: "Manage models…", icon: "gear" },
+              ]}
+              onChange={(v) => {
+                if (v === "__manage__") {
+                  post({ type: "manageModels" });
+                  return;
+                }
+                setModel(v);
+                post({ type: "setModel", model: v });
+              }}
               minWidth={270}
               title="Model"
             />
@@ -722,7 +756,7 @@ export function App() {
             <div className="spacer" />
             {busy ? (
               <button className="btn primary stop" onClick={() => post({ type: "stop" })} title="Stop">
-                <Icon name="stop" size={12} /> Stop
+                <Icon name="stop" size={13} />
               </button>
             ) : (
               <button className="btn primary" onClick={send} disabled={!input.trim() && pendingImages.length === 0 && pendingFiles.length === 0} title="Send (Enter)">
@@ -854,10 +888,22 @@ function ToolRow({ item }: { item: Extract<UiItem, { kind: "tool" }> }) {
   );
 }
 
-function ChangesPanel({ changes }: { changes: Array<{ path: string; kind: "edited" | "created" }> }) {
+function ChangesPanel({
+  changes,
+  fileHunks,
+  onCollapse,
+}: {
+  changes: Array<{ path: string; kind: "edited" | "created" }>;
+  fileHunks?: { path: string; hunks: Array<{ header: string; lines: string[] }> };
+  onCollapse: () => void;
+}) {
+  const [collapsed, setCollapsed] = useState(false);
   return (
     <div className="changes">
       <div className="changes-header">
+        <button className={`icon-button hunk-toggle${collapsed ? "" : " open"}`} title={collapsed ? "Expand" : "Collapse"} onClick={() => setCollapsed((c) => !c)}>
+          <Icon name="chevron" size={11} />
+        </button>
         <span className="changes-title">
           Changes <span className="changes-count">{changes.length}</span>
         </span>
@@ -866,16 +912,45 @@ function ChangesPanel({ changes }: { changes: Array<{ path: string; kind: "edite
           <button className="btn small danger" onClick={() => post({ type: "revertAll" })}>Revert all</button>
         </span>
       </div>
-      {changes.map((c) => (
-        <div key={c.path} className="change-row">
-          <span className={`change-kind ${c.kind}`}>{c.kind === "created" ? "A" : "M"}</span>
-          <button className="change-path" title={`Open diff: ${c.path}`} onClick={() => post({ type: "openDiff", path: c.path })}>
-            {c.path}
-          </button>
-          <IconButton icon="check" title="Keep this change" onClick={() => post({ type: "keepFile", path: c.path })} size={12} />
-          <IconButton icon="undo" title="Revert this file" danger onClick={() => post({ type: "revertFile", path: c.path })} size={12} />
-        </div>
-      ))}
+      {!collapsed && changes.map((c) => {
+        const expanded = fileHunks?.path === c.path;
+        return (
+          <div key={c.path}>
+            <div className="change-row">
+              <button
+                className={`icon-button hunk-toggle${expanded ? " open" : ""}`}
+                title={expanded ? "Collapse hunks" : "Review individual hunks"}
+                onClick={() => (expanded ? onCollapse() : post({ type: "getHunks", path: c.path }))}
+              >
+                <Icon name="chevron" size={11} />
+              </button>
+              <span className={`change-kind ${c.kind}`}>{c.kind === "created" ? "A" : "M"}</span>
+              <button className="change-path" title={`Open diff: ${c.path}`} onClick={() => post({ type: "openDiff", path: c.path })}>
+                {c.path}
+              </button>
+              <IconButton icon="check" title="Keep this change" onClick={() => post({ type: "keepFile", path: c.path })} size={12} />
+              <IconButton icon="undo" title="Revert this file" danger onClick={() => post({ type: "revertFile", path: c.path })} size={12} />
+            </div>
+            {expanded &&
+              fileHunks.hunks.map((h, i) => (
+                <div key={i} className="hunk">
+                  <div className="hunk-header">
+                    <span className="hunk-range">{h.header}</span>
+                    <IconButton icon="check" title="Accept this hunk" onClick={() => post({ type: "acceptHunk", path: c.path, index: i })} size={11} />
+                    <IconButton icon="undo" title="Reject this hunk" danger onClick={() => post({ type: "rejectHunk", path: c.path, index: i })} size={11} />
+                  </div>
+                  <pre className="hunk-body">
+                    {h.lines.map((line, j) => (
+                      <div key={j} className={`hunk-line ${line.startsWith("+") ? "add" : line.startsWith("-") ? "del" : ""}`}>
+                        {line || " "}
+                      </div>
+                    ))}
+                  </pre>
+                </div>
+              ))}
+          </div>
+        );
+      })}
     </div>
   );
 }

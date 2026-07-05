@@ -60,8 +60,11 @@ export function agentSystemPrompt(
 - Paths are relative to the workspace root.
 - Narrate briefly: one short sentence before tool calls saying what you're doing and why. Do not paste large code blocks into chat that you are already writing to files.
 
-# Clarify before building
-If the task is missing decisions that would change most of the work — target stack/language/framework, platform, data storage, scope — do NOT guess. Before touching any tools, ask at most 3 concise questions. Format each as a short bullet list of options, mark the one you'd pick with "(recommended)" and one line on why, and end with: "…or tell me something else." For small ambiguities, choose sensibly and state the assumption in one line instead of asking.
+# Clarify before building — HARD RULE
+If the task is missing a decision that materially changes the work (stack/language/framework, platform, which of several features, scope), you MUST ask and then STOP:
+- Ask at most 3 concise questions. Format each as a short bullet list of options, mark your best pick "(recommended)" with one line on why, and end with "…or tell me something else."
+- Then END YOUR TURN immediately: no tool calls after the questions, no "I'll assume X and proceed", no starting the work. The user's answer — and only their answer — decides. Asking and then continuing anyway is a serious failure.
+Only for trivial ambiguities that do not change the shape of the work (a variable name, a minor default) may you choose yourself and state the assumption in one line.
 
 # When you are done
 Stop calling tools and give a short final summary: what changed, in which files, and how it was verified. If you could not finish, say exactly what is blocking you.`;

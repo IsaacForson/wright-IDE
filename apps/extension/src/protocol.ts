@@ -21,6 +21,7 @@ export type WebviewToHost =
   | { type: "ready" }
   | { type: "send"; text: string; mode: ChatMode; research: ResearchMode; images?: string[]; files?: FileAttachment[] }
   | { type: "openSettings" }
+  | { type: "manageModels" }
   | { type: "executePlan" }
   | { type: "discardPlan" }
   | { type: "stop" }
@@ -31,10 +32,14 @@ export type WebviewToHost =
   | { type: "planDecision"; usePlan: boolean }
   | { type: "openFile"; path: string }
   | { type: "copyText"; text: string }
+  | { type: "applyCode"; code: string }
   | { type: "listSessions" }
   | { type: "openSession"; id: string }
   | { type: "deleteSession"; id: string }
   | { type: "openDiff"; path: string }
+  | { type: "getHunks"; path: string }
+  | { type: "acceptHunk"; path: string; index: number }
+  | { type: "rejectHunk"; path: string; index: number }
   | { type: "keepFile"; path: string }
   | { type: "revertFile"; path: string }
   | { type: "keepAll" }
@@ -80,6 +85,7 @@ export type HostToWebview =
   | { type: "writeCode"; id: string; path: string; code: string }
   | { type: "writeDone"; id: string; status: "ok" | "error" | "declined" }
   | { type: "changes"; changes: FileChangeItem[] }
+  | { type: "fileHunks"; path: string; hunks: Array<{ header: string; lines: string[] }> }
   | { type: "fileList"; token: number; entries: Array<{ path: string; type: "file" | "dir" }> }
   | { type: "sessions"; sessions: Array<{ id: string; title: string; updatedAt: number; current: boolean }> }
   | { type: "turnDone"; stats?: string }

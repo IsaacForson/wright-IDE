@@ -1,7 +1,7 @@
 import * as vscode from "vscode";
 import { ChatViewProvider, ORIGINAL_SCHEME } from "./ChatViewProvider.js";
 import { IndexService } from "./IndexService.js";
-import { inlineEdit } from "./inlineEdit.js";
+import { PROPOSED_SCHEME, inlineEdit, proposedContentProvider } from "./inlineEdit.js";
 import { WrightCompletionProvider } from "./autocomplete.js";
 import { generateCommitMessage } from "./gitCommit.js";
 import { getConfig } from "./config.js";
@@ -16,6 +16,7 @@ export function activate(context: vscode.ExtensionContext): void {
       webviewOptions: { retainContextWhenHidden: true },
     }),
     vscode.workspace.registerTextDocumentContentProvider(ORIGINAL_SCHEME, chatProvider.originalContentProvider),
+    vscode.workspace.registerTextDocumentContentProvider(PROPOSED_SCHEME, proposedContentProvider),
     vscode.commands.registerCommand("wright.newChat", () => chatProvider.newChat()),
     vscode.commands.registerCommand("wright.focusChat", () =>
       vscode.commands.executeCommand("wright.chat.focus"),

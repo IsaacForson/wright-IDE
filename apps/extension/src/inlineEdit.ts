@@ -2,6 +2,15 @@ import * as vscode from "vscode";
 import { ModelClient, ModelError, nvidiaProvider } from "@wright/core";
 import { getConfig } from "./config.js";
 
+/** Virtual docs serving proposed inline-edit results for the diff review. */
+export const PROPOSED_SCHEME = "wright-proposed";
+const proposedDocs = new Map<string, string>();
+const proposedEmitter = new vscode.EventEmitter<vscode.Uri>();
+export const proposedContentProvider: vscode.TextDocumentContentProvider = {
+  onDidChange: proposedEmitter.event,
+  provideTextDocumentContent: (uri) => proposedDocs.get(uri.path) ?? "",
+};
+
 /**
  * Inline edit (Phase 6, Cmd+K style): select code, describe a change, get
  * it rewritten in place. Single-shot, low latency — routed to the FAST
@@ -107,8 +116,35 @@ export async function inlineEdit(): Promise<void> {
     return;
   }
 
-  await editor.edit((edit) => edit.replace(range, code));
-  vscode.window.setStatusBarMessage("Wright: edit applied — Cmd+Z to undo, save to accept", 6_000);
+  // Review as a real diff: current file vs proposed, then Apply/Discard.
+  const fullBefore = doc.getText(new vscode.Range(new vscode.Position(0, 0), range.start));
+  const fullAfter = doc.getText(new vscode.Range(range.end, doc.lineAt(doc.lineCount - 1).range.end));
+  const proposed = fullBefore + code + fullAfter;
+  const key = `/${Date.now().toString(36)}/${vscode.workspace.asRelativePath(doc.uri)}`;
+  proposedDocs.set(key, proposed);
+  const proposedUri = vscode.Uri.from({ scheme: PROPOSED_SCHEME, path: key });
+  await vscode.commands.executeCommand(
+    "vscode.diff",
+    doc.uri,
+    proposedUri,
+    `${vscode.workspace.asRelativePath(doc.uri)} — Wright inline edit`,
+    { preview: true },
+  );
+
+  const choice = await vscode.window.showInformationMessage(
+    `Wright: apply this edit to ${vscode.workspace.asRelativePath(doc.uri)}?`,
+    "Apply",
+    "Discard",
+  );
+  // Close the diff preview either way.
+  await vscode.commands.executeCommand("workbench.action.closeActiveEditor").then(undefined, () => {});
+  proposedDocs.delete(key);
+
+  if (choice === "Apply") {
+    const freshEditor = await vscode.window.showTextDocument(doc.uri, { preview: false });
+    await freshEditor.edit((edit) => edit.replace(range, code));
+    vscode.window.setStatusBarMessage("Wright: inline edit applied", 4_000);
+  }
 }
 
 function stripFences(text: string): string {

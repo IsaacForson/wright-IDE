@@ -140,22 +140,46 @@
         "wright.model.chat": {
           "type": "string",
           "default": "z-ai/glm-5.2",
-          "description": "Primary model for chat and (later) the agent. Must support tool calling."
+          "description": "Primary model for chat and (later) the agent. Must support tool calling.",
+          "enum": [
+            "z-ai/glm-5.2",
+            "mistralai/mistral-large-3-675b-instruct-2512",
+            "deepseek-ai/deepseek-v4-pro",
+            "moonshotai/kimi-k2.6",
+            "nvidia/nemotron-3-super-120b-a12b",
+            "qwen/qwen3.5-122b-a10b",
+            "minimaxai/minimax-m3",
+            "meta/llama-3.3-70b-instruct",
+            "meta/llama-3.1-8b-instruct"
+          ]
         },
         "wright.model.fast": {
           "type": "string",
           "default": "meta/llama-3.1-8b-instruct",
-          "description": "Cheap/fast model for lightweight tasks."
+          "description": "Cheap/fast model for lightweight tasks.",
+          "enum": [
+            "meta/llama-3.1-8b-instruct",
+            "meta/llama-3.3-70b-instruct",
+            "z-ai/glm-5.2",
+            "nvidia/nemotron-3-super-120b-a12b"
+          ]
         },
         "wright.model.embed": {
           "type": "string",
           "default": "nvidia/nv-embedcode-7b-v1",
-          "description": "Embedding model for codebase indexing (semantic search)."
+          "description": "Embedding model for codebase indexing (semantic search).",
+          "enum": [
+            "nvidia/nv-embedcode-7b-v1"
+          ]
         },
         "wright.model.vision": {
           "type": "string",
           "default": "meta/llama-4-maverick-17b-128e-instruct",
-          "description": "Multimodal model used when the chat message includes an image. Must accept image input."
+          "description": "Multimodal model used when the chat message includes an image. Must accept image input.",
+          "enum": [
+            "meta/llama-4-maverick-17b-128e-instruct",
+            "meta/llama-3.2-90b-vision-instruct"
+          ]
         },
         "wright.webSearch.provider": {
           "type": "string",
@@ -233,7 +257,7 @@
             "meta/llama-3.3-70b-instruct",
             "meta/llama-3.1-8b-instruct"
           ],
-          "markdownDescription": "Models shown in the chat picker. Add or remove any NVIDIA NIM model id (must support tool calling for agent work — check with `pnpm verify -- <id>`). \"auto\" is always included."
+          "markdownDescription": "Models shown in the chat picker. Add or remove any NVIDIA NIM model id (must support tool calling for agent work \u2014 check with `pnpm verify -- <id>`). \"auto\" is always included."
         },
         "wright.defaultMode": {
           "type": "string",
@@ -292,12 +316,14 @@
   },
   "devDependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
+    "@types/diff": "^8.0.0",
     "@types/node": "^22.10.0",
     "@types/react": "^18.3.0",
     "@types/react-dom": "^18.3.0",
     "@types/vscode": "^1.90.0",
     "@vscode/vsce": "^3.2.0",
     "@wright/core": "workspace:*",
+    "diff": "^9.0.0",
     "esbuild": "^0.28.0",
     "highlight.js": "^11.11.1",
     "marked": "^15.0.0",

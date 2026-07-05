@@ -37,6 +37,11 @@ export class TrackedHost implements WorkspaceHost {
     this.snapshots.delete(path);
   }
 
+  /** Move the baseline (used by per-hunk accept: the hunk joins the snapshot). */
+  setSnapshot(path: string, content: string): void {
+    if (this.snapshots.has(path)) this.snapshots.set(path, content);
+  }
+
   keepAll(): void {
     this.snapshots.clear();
   }

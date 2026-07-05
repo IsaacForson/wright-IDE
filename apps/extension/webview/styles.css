@@ -1013,6 +1013,108 @@ body.vscode-light .research-pill.research-deep {
   text-decoration: underline;
 }
 
+.hunk-toggle {
+  width: 18px;
+  height: 18px;
+}
+
+.hunk-toggle .icon {
+  transition: transform 0.15s ease;
+  transform: rotate(-90deg);
+}
+
+.hunk-toggle.open .icon {
+  transform: rotate(0deg);
+}
+
+.hunk {
+  margin: 2px 0 6px 22px;
+  border: 1px solid var(--w-border-soft);
+  border-radius: var(--w-radius);
+  overflow: hidden;
+}
+
+.hunk-header {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 1px 4px 1px 8px;
+  background: var(--w-surface);
+  border-bottom: 1px solid var(--w-border-soft);
+}
+
+.hunk-range {
+  flex: 1;
+  font-family: var(--w-mono);
+  font-size: 10px;
+  opacity: 0.5;
+}
+
+.hunk-body {
+  margin: 0;
+  padding: 2px 0;
+  max-height: 160px;
+  overflow: auto;
+  font-family: var(--w-mono);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.hunk-line {
+  padding: 0 8px;
+  white-space: pre;
+}
+
+.hunk-line.add {
+  background: color-mix(in srgb, var(--vscode-gitDecoration-addedResourceForeground, #81b88b) 14%, transparent);
+  color: var(--vscode-gitDecoration-addedResourceForeground, #81b88b);
+}
+
+.hunk-line.del {
+  background: color-mix(in srgb, var(--w-err) 12%, transparent);
+  color: color-mix(in srgb, var(--w-err) 85%, var(--vscode-foreground));
+}
+
+/* ── chat code-block cards (Apply/Copy) ── */
+
+.code-card {
+  position: relative;
+  margin: 0 0 8px;
+}
+
+.code-card pre {
+  margin: 0;
+}
+
+.code-actions {
+  position: absolute;
+  top: 5px;
+  right: 5px;
+  display: flex;
+  gap: 4px;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+
+.code-card:hover .code-actions {
+  opacity: 1;
+}
+
+.code-actions button {
+  border: 1px solid var(--w-border);
+  border-radius: 4px;
+  padding: 1px 8px;
+  font: inherit;
+  font-size: 10.5px;
+  color: var(--vscode-foreground);
+  background: var(--vscode-editorWidget-background, var(--vscode-sideBar-background));
+  cursor: pointer;
+}
+
+.code-actions button:hover {
+  background: var(--w-hover);
+}
+
 /* ── plan bar ── */
 
 .plan-bar {

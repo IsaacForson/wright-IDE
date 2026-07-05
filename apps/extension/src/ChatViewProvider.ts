@@ -19,7 +19,9 @@ import {
 } from "@wright/core";
 import { NodeWorkspaceHost, connectMcpServers, loadRulesFile, type McpConnection, type McpServerConfig } from "@wright/core/node";
 import { IndexService } from "./IndexService.js";
-import { getConfig } from "./config.js";
+import { createDiagnosticsTool } from "./diagnosticsTool.js";
+import { TerminalHost } from "./terminalHost.js";
+import { DEFAULT_MODEL_LIST, getConfig } from "./config.js";
 import { getActiveFile, workspaceRoot } from "./workspace.js";
 import type { ChatMode, FileAttachment, HostToWebview, ResearchMode, UiItem, WebviewToHost } from "./protocol.js";
 import type { AgentMode } from "@wright/core";
@@ -305,6 +307,20 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       case "openSettings":
         await vscode.commands.executeCommand("workbench.action.openSettings", "wright");
         return;
+      case "manageModels": {
+        // Checkbox list: checked models appear in the picker.
+        const config = getConfig();
+        const all = [...new Set([...DEFAULT_MODEL_LIST, ...config.modelList])];
+        const picked = await vscode.window.showQuickPick(
+          all.map((m) => ({ label: m, picked: config.modelList.includes(m) })),
+          { canPickMany: true, title: "Wright: models shown in the picker" },
+        );
+        if (picked) {
+          await vscode.workspace.getConfiguration("wright").update("models.list", picked.map((p) => p.label), true);
+          this.sendState(this.abort !== undefined);
+        }
+        return;
+      }
       case "openFile": {
         const root = workspaceRoot();
         if (!root) return;
@@ -318,6 +334,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       case "copyText":
         await vscode.env.clipboard.writeText(msg.text);
         vscode.window.setStatusBarMessage("Wright: code copied", 2_500);
+        return;
+      case "applyCode":
+        await this.applyCodeToActiveFile(msg.code);
         return;
       case "listSessions":
         this.persistSession(); // make sure the current chat shows up too
@@ -360,6 +379,15 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       case "openDiff":
         await this.openDiff(msg.path);
         return;
+      case "getHunks":
+        await this.sendHunks(msg.path);
+        return;
+      case "acceptHunk":
+        await this.applyHunk(msg.path, msg.index, "accept");
+        return;
+      case "rejectHunk":
+        await this.applyHunk(msg.path, msg.index, "reject");
+        return;
       case "keepFile":
         this.tracker?.keep(msg.path);
         this.sendChanges();
@@ -379,6 +407,61 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     }
   }
 
+  // ── per-hunk review (Cursor-style granular accept/reject) ────────────
+
+  private async computeHunks(path: string) {
+    if (!this.tracker) return undefined;
+    const snapshot = this.tracker.snapshot(path);
+    if (snapshot === undefined) return undefined;
+    let current: string;
+    try {
+      current = await this.tracker.readFile(path);
+    } catch {
+      return undefined;
+    }
+    const { structuredPatch } = await import("diff");
+    const patch = structuredPatch(path, path, snapshot ?? "", current, "", "", { context: 2 });
+    return { snapshot: snapshot ?? "", current, hunks: patch.hunks };
+  }
+
+  private async sendHunks(path: string): Promise<void> {
+    const computed = await this.computeHunks(path);
+    this.post({
+      type: "fileHunks",
+      path,
+      hunks: (computed?.hunks ?? []).map((h) => ({
+        header: `@@ -${h.oldStart},${h.oldLines} +${h.newStart},${h.newLines} @@`,
+        lines: h.lines,
+      })),
+    });
+  }
+
+  private async applyHunk(path: string, index: number, action: "accept" | "reject"): Promise<void> {
+    const computed = await this.computeHunks(path);
+    const hunk = computed?.hunks[index];
+    if (!computed || !hunk || !this.tracker) return;
+    const oldLines = hunk.lines.filter((l) => !l.startsWith("+")).map((l) => l.slice(1));
+    const newLines = hunk.lines.filter((l) => !l.startsWith("-")).map((l) => l.slice(1));
+
+    if (action === "accept") {
+      // Fold the hunk into the baseline: it is no longer "pending".
+      const snapLines = computed.snapshot.split("\n");
+      snapLines.splice(hunk.oldStart - 1, hunk.oldLines, ...newLines);
+      this.tracker.setSnapshot(path, snapLines.join("\n"));
+    } else {
+      // Revert the hunk on disk: current lines go back to the old ones.
+      const curLines = computed.current.split("\n");
+      curLines.splice(hunk.newStart - 1, hunk.newLines, ...oldLines);
+      await this.tracker.writeFile(path, curLines.join("\n"));
+    }
+
+    // Fully resolved file drops out of the changes list.
+    const after = await this.computeHunks(path);
+    if (after && after.hunks.length === 0) this.tracker.keep(path);
+    await this.sendHunks(path);
+    this.sendChanges();
+  }
+
   private async openDiff(relPath: string): Promise<void> {
     const root = workspaceRoot();
     if (!root || !this.tracker) return;
@@ -392,6 +475,74 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       `${relPath} (Wright: ${kind})`,
       { preview: true },
     );
+
+    // Accept/reject right from the diff: Keep replaces (accepts what's on
+    // disk), Revert restores the original.
+    const choice = await vscode.window.showInformationMessage(
+      `${relPath}: keep Wright's changes?`,
+      "Keep",
+      "Revert",
+    );
+    if (choice === "Keep") {
+      this.tracker?.keep(relPath);
+    } else if (choice === "Revert") {
+      await this.tracker?.revert(relPath);
+    }
+    if (choice) {
+      await vscode.commands.executeCommand("workbench.action.closeActiveEditor").then(undefined, () => {});
+      this.sendChanges();
+    }
+  }
+
+  /**
+   * "Apply" on a chat code block (Cursor-style): fast-model merge of the
+   * snippet into the active editor file, written through the tracker so it
+   * shows in the Changes panel with a reviewable diff.
+   */
+  private async applyCodeToActiveFile(code: string): Promise<void> {
+    const config = getConfig();
+    const root = workspaceRoot();
+    const info = getActiveFile();
+    if (!root || !info) {
+      vscode.window.showInformationMessage("Wright: open the file you want to apply the code to first.");
+      return;
+    }
+    if (!config.apiKey) return;
+    if (info.content.length > 48_000) {
+      vscode.window.showWarningMessage("Wright: file too large for Apply — ask the agent to edit it instead.");
+      return;
+    }
+    this.tracker ??= new TrackedHost(new NodeWorkspaceHost(root.fsPath));
+    await vscode.window.withProgress(
+      { location: vscode.ProgressLocation.Notification, title: `Wright: applying to ${info.path}…` },
+      async () => {
+        const client = new ModelClient(nvidiaProvider({ apiKey: config.apiKey!, chatModel: config.fastModel }));
+        const result = await client.complete({
+          model: config.fastModel,
+          messages: [
+            {
+              role: "system",
+              content:
+                "You are a code merge engine. Integrate the SNIPPET into the FILE at the right place — replacing the " +
+                "code it's clearly a new version of, or inserting it where it belongs. Preserve everything unrelated " +
+                "exactly. Output ONLY the complete updated file, no fences, no commentary.",
+            },
+            { role: "user", content: `FILE (${info.path}):\n${info.content}\n\nSNIPPET:\n${code}` },
+          ],
+          max_tokens: 16_000,
+          temperature: 0.1,
+        });
+        let merged = (result.message.content ?? "").trim().replace(/^```[\w-]*\n?|```$/g, "");
+        if (!merged || merged.length < info.content.length / 4) {
+          vscode.window.showWarningMessage("Wright: merge looked wrong — nothing applied.");
+          return;
+        }
+        if (!merged.endsWith("\n") && info.content.endsWith("\n")) merged += "\n";
+        await this.tracker!.writeFile(info.path, merged);
+        this.sendChanges();
+        vscode.window.setStatusBarMessage(`Wright: applied to ${info.path} — review in Changes`, 5_000);
+      },
+    ).then(undefined, (err) => vscode.window.showErrorMessage(`Wright: apply failed — ${err instanceof Error ? err.message : String(err)}`));
   }
 
   /**
@@ -482,13 +633,15 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       nvidiaProvider({ apiKey, chatModel: model, fastModel: config.fastModel }),
     );
     this.tracker ??= new TrackedHost(new NodeWorkspaceHost(root.fsPath));
-    let tools = createBuiltinTools(this.tracker);
+    // Commands run in a visible "Wright" terminal; edits still go through the tracker.
+    let tools = createBuiltinTools(new TerminalHost(this.tracker, root.fsPath));
     const indexer = await this.indexService.ensure(client, root.fsPath);
     if (indexer) tools.push(createCodebaseSearchTool(indexer));
     tools.push(createWebSearchTool(config.webSearch));
     tools.push(createReadUrlTool());
+    tools.push(createDiagnosticsTool());
     if (mode === "ask") {
-      const readOnly = new Set(["read_file", "list_dir", "search", "codebase_search", "web_search", "read_url"]);
+      const readOnly = new Set(["read_file", "list_dir", "search", "codebase_search", "web_search", "read_url", "get_diagnostics"]);
       tools = tools.filter((t) => readOnly.has(t.definition.function.name));
     }
     const rules = await loadRulesFile(root.fsPath);
