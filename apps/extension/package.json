@@ -28,9 +28,17 @@
     "directory": "apps/extension"
   },
   "main": "./dist/extension.js",
+  "activationEvents": [
+    "onStartupFinished"
+  ],
   "contributes": {
+    "configurationDefaults": {
+      "chat.disableAIFeatures": true,
+      "chat.titleBar.signIn.enabled": false,
+      "workbench.welcomePage.experimentalOnboarding": false
+    },
     "viewsContainers": {
-      "activitybar": [
+      "secondarySidebar": [
         {
           "id": "wright",
           "title": "Wright",
@@ -56,6 +64,16 @@
       {
         "command": "wright.focusChat",
         "title": "Wright: Open Chat"
+      },
+      {
+        "command": "wright.openSettings",
+        "title": "Wright: Settings",
+        "icon": "$(gear)"
+      },
+      {
+        "command": "wright.chatHistory",
+        "title": "Wright: Chat History",
+        "icon": "$(history)"
       },
       {
         "command": "wright.rebuildIndex",
@@ -96,7 +114,17 @@
         {
           "command": "wright.newChat",
           "when": "view == wright.chat",
-          "group": "navigation"
+          "group": "navigation@1"
+        },
+        {
+          "command": "wright.chatHistory",
+          "when": "view == wright.chat",
+          "group": "navigation@2"
+        },
+        {
+          "command": "wright.openSettings",
+          "when": "view == wright.chat",
+          "group": "navigation@3"
         }
       ],
       "scm/title": [

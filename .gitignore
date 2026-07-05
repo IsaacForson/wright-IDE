@@ -1,5 +1,9 @@
 node_modules/
 dist/
+/vscode/
+/VSCode-darwin-arm64/
+/build/builtin-staging/
+/build/ide/node-runtime/
 *.tsbuildinfo
 .env
 .env.local

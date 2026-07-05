@@ -5,6 +5,7 @@ import { PROPOSED_SCHEME, inlineEdit, proposedContentProvider } from "./inlineEd
 import { WrightCompletionProvider } from "./autocomplete.js";
 import { generateCommitMessage } from "./gitCommit.js";
 import { getConfig } from "./config.js";
+import { WrightSettingsPanel } from "./settingsPanel.js";
 
 export function activate(context: vscode.ExtensionContext): void {
   const indexService = new IndexService(getConfig().embedModel);
@@ -21,6 +22,8 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand("wright.focusChat", () =>
       vscode.commands.executeCommand("wright.chat.focus"),
     ),
+    vscode.commands.registerCommand("wright.chatHistory", () => chatProvider.toggleHistory()),
+    vscode.commands.registerCommand("wright.openSettings", () => WrightSettingsPanel.show(context.extensionUri)),
     vscode.commands.registerCommand("wright.rebuildIndex", () => void indexService.rebuild()),
     vscode.commands.registerCommand("wright.inlineEdit", () => void inlineEdit()),
     vscode.commands.registerCommand("wright.generateCommitMessage", () => void generateCommitMessage()),
@@ -29,6 +32,17 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand("wright.reviewSelection", () => void chatProvider.runSelectionAction("review")),
     vscode.languages.registerInlineCompletionItemProvider({ pattern: "**" }, new WrightCompletionProvider()),
   );
+
+  // Open the Wright panel (secondary sidebar) on startup, then hand focus back
+  // to the editor so it behaves like a persistent chat, not a focus grab.
+  void (async () => {
+    try {
+      await vscode.commands.executeCommand("wright.chat.focus");
+      await vscode.commands.executeCommand("workbench.action.focusActiveEditorGroup");
+    } catch {
+      // View not ready yet (e.g. first-run layout restore) — harmless.
+    }
+  })();
 }
 
 export function deactivate(): void {}

@@ -239,6 +239,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this.items = [];
     this.sessionId = `s${Date.now().toString(36)}`;
     this.sendState(false);
+    // Reset webview-local UI (history overlay, mode picker) to match the fresh chat.
+    this.post({ type: "chatCleared" });
+  }
+
+  /** Toggle the chat-history overlay (driven by the native view-title button). */
+  toggleHistory(): void {
+    this.post({ type: "toggleHistory" });
   }
 
   private post(msg: HostToWebview): void {

@@ -75,6 +75,8 @@ export type HostToWebview =
       defaultMode: ChatMode;
     }
   | { type: "attachSelection"; file: FileAttachment }
+  | { type: "toggleHistory" }
+  | { type: "chatCleared" }
   | { type: "planReady" }
   | { type: "planSuggest" }
   | { type: "assistantStart" }

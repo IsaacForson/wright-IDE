@@ -250,6 +250,17 @@ export function App() {
           setPendingFiles((p) => [...p, msg.file]);
           inputRef.current?.focus();
           break;
+        case "toggleHistory":
+          setSessions((s) => {
+            if (s) return undefined;
+            post({ type: "listSessions" });
+            return [];
+          });
+          break;
+        case "chatCleared":
+          setSessions(undefined);
+          setMode(lastDefaultMode.current); // fresh chat starts in the configured default mode
+          break;
         case "planReady":
           setPlanPending(true);
           break;
@@ -556,32 +567,6 @@ export function App() {
           <span>Drop files to attach as context</span>
         </div>
       )}
-
-      <div className="chat-header">
-        <span className="chat-header-title">Wright</span>
-        <div className="spacer" />
-        <IconButton
-          icon="plus"
-          title="New chat"
-          onClick={() => {
-            setSessions(undefined);
-            setMode(lastDefaultMode.current); // fresh chat starts in the configured default mode
-            post({ type: "newChat" });
-          }}
-        />
-        <IconButton
-          icon="history"
-          title="Chat history"
-          onClick={() => {
-            if (sessions) setSessions(undefined);
-            else {
-              setSessions([]);
-              post({ type: "listSessions" });
-            }
-          }}
-        />
-        <IconButton icon="gear" title="Wright settings" onClick={() => post({ type: "openSettings" })} />
-      </div>
 
       {sessions && (
         <div className="sessions-panel">
