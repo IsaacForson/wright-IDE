@@ -419,8 +419,9 @@ export function App() {
       if (file.type.startsWith("image/")) addImageFile(file);
       else addTextFile(file);
     }
-    // Files dragged from the VS Code explorer arrive as a uri-list.
-    const uriList = dt.getData("text/uri-list");
+    // Files dragged from the VS Code explorer arrive as a uri-list — under
+    // VS Code's own mime type, with text/uri-list as a fallback.
+    const uriList = dt.getData("application/vnd.code.uri-list") || dt.getData("text/uri-list");
     if (uriList && dt.files.length === 0) {
       for (const line of uriList.split(/\r?\n/)) {
         if (!line || line.startsWith("#")) continue;
@@ -530,8 +531,13 @@ export function App() {
   return (
     <div
       className={`app${dragOver ? " drag-over" : ""}`}
+      onDragEnter={(e) => {
+        e.preventDefault();
+        setDragOver(true);
+      }}
       onDragOver={(e) => {
         e.preventDefault();
+        e.dataTransfer.dropEffect = "copy";
         setDragOver(true);
       }}
       onDragLeave={(e) => {
@@ -837,6 +843,7 @@ export function App() {
  */
 function QuestionMessage({ content, onAnswer }: { content: string; onAnswer: (value: string) => void }) {
   const [custom, setCustom] = useState("");
+  const [selected, setSelected] = useState<number | "custom" | undefined>();
   const options = extractOptions(content);
   // Strip the option bullets and the "or tell me" line from the prose.
   const prose = content
@@ -847,31 +854,49 @@ function QuestionMessage({ content, onAnswer }: { content: string; onAnswer: (va
       return !(m && !m[1]!.trim().endsWith("?") && m[1]!.trim().length <= 160);
     })
     .join("\n");
+  const cleanValue = (v: string) => v.replace(/\s*\(recommended\)\.?/i, "").trim();
+  const canSubmit = selected === "custom" ? custom.trim().length > 0 : selected !== undefined;
+  const submit = () => {
+    if (!canSubmit) return;
+    onAnswer(selected === "custom" ? custom.trim() : cleanValue(options[selected as number]!.value));
+  };
   return (
     <div className="message assistant">
       <div className="message-body" dangerouslySetInnerHTML={{ __html: renderMarkdown(prose) }} />
       <div className="question-options">
         {options.map((o, i) => {
           const recommended = /recommended/i.test(o.value);
+          const shown = cleanValue(o.value);
           return (
-            <button key={i} className={`question-option${recommended ? " recommended" : ""}`} onClick={() => onAnswer(o.value)}>
-              <span className="question-option-text" dangerouslySetInnerHTML={{ __html: renderMarkdown(o.value).replace(/^<p>|<\/p>\s*$/g, "") }} />
+            <button
+              key={i}
+              className={`question-option${recommended ? " recommended" : ""}${selected === i ? " selected" : ""}`}
+              onClick={() => setSelected(i)}
+            >
+              <span className="question-option-text" dangerouslySetInnerHTML={{ __html: renderMarkdown(shown).replace(/^<p>|<\/p>\s*$/g, "") }} />
               {recommended && <span className="question-badge">recommended</span>}
+              {selected === i && <Icon name="check" size={13} />}
             </button>
           );
         })}
         <input
-          className="question-input"
+          className={`question-input${selected === "custom" ? " selected" : ""}`}
           placeholder="…or tell me something else."
           value={custom}
-          onChange={(e) => setCustom(e.target.value)}
+          onFocus={() => setSelected("custom")}
+          onChange={(e) => {
+            setCustom(e.target.value);
+            setSelected("custom");
+          }}
           onKeyDown={(e) => {
-            if (e.key === "Enter" && custom.trim()) {
-              onAnswer(custom.trim());
-              setCustom("");
-            }
+            if (e.key === "Enter") submit();
           }}
         />
+        <div className="question-submit-row">
+          <button className="btn primary" disabled={!canSubmit} onClick={submit}>
+            <Icon name="send" size={12} /> Submit
+          </button>
+        </div>
       </div>
     </div>
   );

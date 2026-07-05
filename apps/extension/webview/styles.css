@@ -985,6 +985,25 @@ body.vscode-light .research-pill.research-deep {
   border-color: var(--w-accent);
 }
 
+.question-option.selected {
+  border-color: var(--w-accent);
+  background: color-mix(in srgb, var(--w-accent) 12%, var(--w-surface));
+}
+
+.question-option.selected .icon {
+  color: var(--w-accent);
+}
+
+.question-input.selected {
+  border-color: var(--w-accent);
+}
+
+.question-submit-row {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 2px;
+}
+
 .error-text {
   flex: 1;
   min-width: 0;
