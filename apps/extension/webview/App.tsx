@@ -241,129 +241,6 @@ function activityLabel(name: string, args: string): string {
   }
 }
 
-/**
- * Extract selectable options from an assistant question (markdown fallback
- * when the model didn't use ask_user). Topics/headers are never options.
- *
- * Topics look like: "Framework:", "**Purpose:**", "### Q: Scope", "1. Platform"
- * Answers look like: "- React Native — …", "- Flutter (recommended)"
- */
-function extractQuestionGroups(text: string): Array<{ title?: string; options: Array<{ label: string; value: string }> }> {
-  if (!/\?|recommended|or tell me|key decisions|which (of|one)|pick (one|a)|choose|###\s*q:/i.test(text)) {
-    return [];
-  }
-
-  type Group = { title?: string; options: Array<{ label: string; value: string }> };
-  const groups: Group[] = [];
-  let current: Group = { options: [] };
-
-  const pushCurrent = () => {
-    // Need ≥2 answers to render a picker. Never merge a lone option into the
-    // previous topic — that mixes unrelated sections.
-    if (current.options.length >= 2) groups.push(current);
-    current = { options: [] };
-  };
-
-  const cleanTitle = (s: string) =>
-    s
-      .replace(/\*\*/g, "")
-      .replace(/^q:\s*/i, "")
-      .replace(/:\s*$/, "")
-      .trim();
-
-  /** True when this bullet is a section/topic, not a selectable answer. */
-  const isTopic = (body: string): boolean => {
-    const clean = body.replace(/\*\*/g, "").trim();
-    if (/or tell me/i.test(clean)) return false;
-    // Trailing colon = header ("Framework:", "Key features/requirements:")
-    if (/:\s*$/.test(clean)) return true;
-    if (/^q:\s*/i.test(clean)) return true;
-    // Bare category labels with no description / em-dash detail
-    const labelOnly = clean.replace(/\?$/, "").trim();
-    if (
-      /^(platform(\s*\/\s*stack)?|stack|purpose|scope|framework|tooling|features?|requirements?|key features(\s*\/\s*requirements?)?|integrations?|auth(entication)?|data storage|state management)\b/i.test(
-        labelOnly,
-      ) &&
-      labelOnly.length < 48 &&
-      !/[—–]/.test(clean) &&
-      !/\(recommended\)/i.test(clean)
-    ) {
-      return true;
-    }
-    return false;
-  };
-
-  for (const line of text.split("\n")) {
-    const trimmed = line.trim();
-    // Explicit headers: "### Q: …", "**1. Platform**", "# Purpose"
-    const header =
-      trimmed.match(/^#{1,3}\s+(?:q:\s*)?(.+)$/i) ||
-      trimmed.match(/^\*{0,2}\s*\d+[.)]\s+(.+?)\*{0,2}$/) ||
-      trimmed.match(/^\*\*(.+?)\*\*\s*:?\s*$/);
-    if (header && !/^\s*(?:[-*•]|\d+\.)\s+/.test(line)) {
-      pushCurrent();
-      current = { title: cleanTitle(header[1]!), options: [] };
-      continue;
-    }
-
-    const m = line.match(/^\s*(?:[-*•]|\d+\.)\s+(.*)$/);
-    if (!m) continue;
-    const body = m[1]!.trim();
-    if (!body || body.length > 500) continue;
-    if (/or tell me/i.test(body)) continue;
-
-    if (isTopic(body)) {
-      pushCurrent();
-      current = { title: cleanTitle(body), options: [] };
-      continue;
-    }
-
-    const bold = body.match(/\*\*(.+?)\*\*/);
-    const label = (bold ? bold[1]! : body.replace(/[*`]/g, "").split(/[—:\-–(]/)[0]!).trim().slice(0, 64);
-    const value = body.replace(/\*\*/g, "").replace(/`/g, "");
-    if (label) current.options.push({ label, value });
-  }
-  pushCurrent();
-
-  if (groups.length === 0) {
-    const flat = extractFlatOptions(text);
-    if (flat.length >= 2) return [{ options: flat }];
-    return [];
-  }
-
-  return groups.filter((g) => g.options.length >= 2);
-}
-
-function extractFlatOptions(text: string): Array<{ label: string; value: string }> {
-  const opts: Array<{ label: string; value: string }> = [];
-  for (const line of text.split("\n")) {
-    const m = line.match(/^\s*(?:[-*•]|\d+\.)\s+(.*)$/);
-    if (!m) continue;
-    const body = m[1]!.trim();
-    if (!body || body.length > 500) continue;
-    if (/or tell me/i.test(body)) continue;
-    const clean = body.replace(/\*\*/g, "").trim();
-    // Skip topics in the flat fallback too.
-    if (/:\s*$/.test(clean)) continue;
-    if (/^q:\s*/i.test(clean)) continue;
-    const labelOnly = clean.replace(/\?$/, "").trim();
-    if (
-      /^(platform(\s*\/\s*stack)?|stack|purpose|scope|framework|tooling|features?|requirements?|key features(\s*\/\s*requirements?)?)\b/i.test(
-        labelOnly,
-      ) &&
-      labelOnly.length < 48 &&
-      !/[—–]/.test(clean)
-    ) {
-      continue;
-    }
-    const bold = body.match(/\*\*(.+?)\*\*/);
-    const label = (bold ? bold[1]! : body.replace(/[*`]/g, "").split(/[—:\-–(]/)[0]!).trim().slice(0, 64);
-    const value = body.replace(/\*\*/g, "").replace(/`/g, "");
-    if (label) opts.push({ label, value });
-  }
-  return opts;
-}
-
 function relativeTime(ts: number): string {
   const mins = Math.round((Date.now() - ts) / 60_000);
   if (mins < 1) return "just now";
@@ -800,19 +677,6 @@ export function App() {
     post({ type: "send", text, mode, research, images: images.length ? images : undefined, files: files.length ? files : undefined });
   };
 
-  /** Send a specific string as the user's next message (used by option chips). */
-  const sendValue = (value: string) => {
-    if (busy) return;
-    setError(undefined);
-    setStats(undefined);
-    setStatus("Thinking");
-    turnStart.current = Date.now();
-    setElapsed(0);
-    if (planPending) setPlanPending(false);
-    setItems((prev) => [...prev, { kind: "text", role: "user", content: value }]);
-    post({ type: "send", text: value, mode, research });
-  };
-
   const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (mention && mention.entries.length > 0) {
       if (e.key === "ArrowDown") {
@@ -932,13 +796,9 @@ export function App() {
           const item = block.item;
           const i = block.index;
           if (item.kind === "text") {
-            return !pendingAsk &&
-              !busy &&
-              i === lastIndex &&
-              item.role === "assistant" &&
-              extractQuestionGroups(item.content).length > 0 ? (
-              <QuestionMessage key={i} content={item.content} onAnswer={sendValue} />
-            ) : (
+            // Cursor-style: selectable chips ONLY from ask_user (pendingAsk below).
+            // Never scrape markdown bullets — that turns package.json dumps into fake answers.
+            return (
               <TextMessage
                 key={i}
                 role={item.role}
@@ -1219,8 +1079,8 @@ export function App() {
 }
 
 /**
- * Structured ask_user card — prompt is the topic header; options are answers only.
- * This is the Cursor AskQuestion equivalent; markdown QuestionMessage is the fallback.
+ * Structured ask_user card — Cursor AskQuestion style.
+ * Prompt = topic header; options = answers only. Never inferred from markdown.
  */
 function AskUserMessage({
   ask,
@@ -1318,137 +1178,6 @@ function AskUserMessage({
             <Icon name="send" size={12} /> Submit
           </button>
         </div>
-      </div>
-    </div>
-  );
-}
-
-/**
- * An assistant question rendered Cursor-style: the option bullets ARE the
- * selectable buttons, and the free-form fallback is an inline input whose
- * placeholder is "…or tell me something else."
- *
- * Multi-section prompts (Platform / Purpose / Scope) render as grouped
- * lists — pick one per group, then Submit joins the answers.
- * Topics (headers ending in ":" / bare category labels) are titles, never options.
- */
-function QuestionMessage({ content, onAnswer }: { content: string; onAnswer: (value: string) => void }) {
-  const groups = extractQuestionGroups(content);
-  const [custom, setCustom] = useState("");
-  const [selected, setSelected] = useState<Array<number | undefined>>(
-    () => groups.map(() => undefined),
-  );
-  const [customMode, setCustomMode] = useState(false);
-
-  // Keep intro prose; strip answer bullets and topic headers (shown as group titles).
-  const prose = content
-    .split("\n")
-    .filter((line) => {
-      if (/or tell me/i.test(line)) return false;
-      const trimmed = line.trim();
-      if (/^#{1,3}\s+/.test(trimmed)) return false;
-      const m = line.match(/^\s*(?:[-*•]|\d+\.)\s+(.*)$/);
-      if (!m) return true;
-      const body = m[1]!.trim();
-      if (body.length > 500) return true;
-      const clean = body.replace(/\*\*/g, "").trim();
-      if (/:\s*$/.test(clean)) return false; // topic → group title
-      if (/^q:\s*/i.test(clean)) return false;
-      return false; // any remaining list item is an option (or was)
-    })
-    .join("\n");
-
-  const cleanValue = (v: string) => v.replace(/\s*\(recommended\)\.?/i, "").trim();
-
-  const picks = selected
-    .map((idx, gi) => (idx === undefined ? undefined : cleanValue(groups[gi]!.options[idx]!.value)))
-    .filter((v): v is string => !!v);
-
-  const canSubmit = customMode
-    ? custom.trim().length > 0
-    : groups.length <= 1
-      ? picks.length === 1
-      : picks.length >= 1; // multi-section: allow partial (user may only answer some)
-
-  const submit = () => {
-    if (!canSubmit) return;
-    if (customMode) {
-      onAnswer(custom.trim());
-      return;
-    }
-    // Prefix each pick with its group title when multi-section so topics stay clear.
-    if (groups.length > 1) {
-      const labeled = selected
-        .map((idx, gi) => {
-          if (idx === undefined) return undefined;
-          const title = groups[gi]!.title;
-          const val = cleanValue(groups[gi]!.options[idx]!.value);
-          return title ? `${title}: ${val}` : val;
-        })
-        .filter((v): v is string => !!v);
-      onAnswer(labeled.join("\n"));
-      return;
-    }
-    onAnswer(picks.join(", "));
-  };
-
-  return (
-    <div className="message assistant">
-      <div className="message-body" dangerouslySetInnerHTML={{ __html: renderMarkdown(prose) }} />
-      {groups.map((group, gi) => (
-        <div key={gi} className="question-group">
-          {group.title && <div className="question-group-title">{group.title}</div>}
-          <div className="question-options">
-            {group.options.map((o, i) => {
-              const recommended = /recommended/i.test(o.value);
-              const shown = cleanValue(o.value);
-              return (
-                <button
-                  key={i}
-                  className={`question-option${recommended ? " recommended" : ""}${selected[gi] === i ? " selected" : ""}`}
-                  onClick={() => {
-                    setCustomMode(false);
-                    setSelected((prev) => {
-                      const next = [...prev];
-                      next[gi] = i;
-                      return next;
-                    });
-                  }}
-                >
-                  <span
-                    className="question-option-text"
-                    dangerouslySetInnerHTML={{ __html: renderMarkdown(shown).replace(/^<p>|<\/p>\s*$/g, "") }}
-                  />
-                  {recommended && <span className="question-badge">recommended</span>}
-                  {selected[gi] === i && <Icon name="check" size={13} />}
-                </button>
-              );
-            })}
-          </div>
-        </div>
-      ))}
-      <div className="question-options">
-        <input
-          className={`question-input${customMode ? " selected" : ""}`}
-          placeholder="…or tell me something else."
-          value={custom}
-          onFocus={() => setCustomMode(true)}
-          onChange={(e) => {
-            setCustom(e.target.value);
-            setCustomMode(true);
-          }}
-          onKeyDown={(e) => {
-            if (e.key === "Enter") submit();
-          }}
-        />
-        <div className="question-submit-row">
-          <button className="btn primary" disabled={!canSubmit} onClick={submit}>
-            <Icon name="send" size={12} /> Submit
-          </button>
-        </div>
-      </div>
-      <div className="message-actions">
-        <MessageCopyButton text={content} />
       </div>
     </div>
   );

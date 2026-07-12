@@ -35,13 +35,15 @@ export function createAskUserTool(waitForAnswers: AskUserWaiter): Tool {
       function: {
         name: "ask_user",
         description:
-          "Ask the user one or more multiple-choice clarifying questions in the chat UI. " +
-          "Use this INSTEAD of writing bullet-list questions in plain text whenever a decision " +
-          "is needed (stack, platform, scope, features, etc.). " +
-          "Each question's `prompt` is the topic; `options` are ONLY the selectable answers — " +
-          "never put the topic/header itself in options. " +
-          "Arguments MUST be a single JSON object (no markdown fences, no text after the closing brace). " +
-          "After calling this tool, STOP and wait for the user's answer (do not assume or continue).",
+          "Ask the user one or more multiple-choice clarifying questions via the chat UI " +
+          "(Cursor AskQuestion style). Call this ONLY when a real decision is required BEFORE you can continue " +
+          "(which stack, which approach, confirm a destructive action, pick among alternatives). " +
+          "Do NOT call this after answering a simple question, for polite 'anything else?' offers, " +
+          "or to re-list facts you already explained (dependencies, file contents, takeaways). " +
+          "Do NOT write selectable options as markdown bullets — this tool owns the UI. " +
+          "Each question's `prompt` is the topic/header; `options` are ONLY concrete answer choices " +
+          "(never put the topic itself in options). " +
+          "Arguments MUST be a single JSON object. After calling, STOP and wait for the tool result.",
         parameters: {
           type: "object",
           properties: {

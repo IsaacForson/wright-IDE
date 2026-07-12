@@ -86,7 +86,7 @@ export function composeUserRules(cfg = vscode.workspace.getConfiguration("wright
   const parts: string[] = [];
   if (cfg.get<boolean>("rules.alwaysAskFollowUps")) {
     parts.push(
-      "- Always ask clarifying follow-up questions via the ask_user tool when the request is ambiguous, incomplete, or missing a decision that would change the work — before making substantial changes.",
+      "- When a request is ambiguous or missing a decision that would change the work, call ask_user BEFORE acting. Do not ask after you already fully answered. Do not turn summaries, dependency lists, or file contents into selectable options.",
     );
   }
   if (cfg.get<boolean>("rules.requireDeleteApproval") ?? true) {

@@ -74,7 +74,7 @@ const SECTIONS: Section[] = [
         key: "rules.alwaysAskFollowUps",
         label: "Always ask follow-ups",
         kind: "toggle",
-        desc: "When a request is ambiguous or underspecified, ask clarifying questions (ask_user) before making substantial changes",
+        desc: "When a request is ambiguous, ask clarifying questions (ask_user) before acting — not after answering, and never turn summaries into option chips",
       },
       {
         key: "rules.requireDeleteApproval",
