@@ -1,4 +1,5 @@
 import * as vscode from "vscode";
+import { keyHealth } from "@wright/core";
 import { DEFAULT_MODEL_LIST } from "./config.js";
 import { applyBuiltinChatVisibility, openBuiltinChatPanel } from "./builtinChat.js";
 
@@ -23,6 +24,8 @@ interface Field {
   configSection?: string;
   /** For toggles: UI on means the stored boolean is false (e.g. chat.disableAIFeatures) */
   invert?: boolean;
+  /** Show rate-limit health dots / countdown on stringlist tags (NVIDIA key pool). */
+  keyHealth?: boolean;
 }
 
 interface Section {
@@ -77,7 +80,7 @@ const SECTIONS: Section[] = [
     icon: "key",
     fields: [
       { key: "nvidia.apiKey", label: "NVIDIA API Key", kind: "password", placeholder: "nvapi-…", desc: "From build.nvidia.com. If empty, Wright falls back to the NVIDIA_API_KEY env var, then a .env at the workspace root. Bare model ids in the picker use NVIDIA." },
-      { key: "nvidia.apiKeys", label: "Additional Keys (rotation)", kind: "stringlist", desc: "Extra keys rotated automatically when a request hits a rate limit (429). Add several free-tier keys to raise effective throughput" },
+      { key: "nvidia.apiKeys", label: "Additional Keys (rotation)", kind: "stringlist", keyHealth: true, desc: "Extra keys rotated on 429. Green = healthy · yellow/red = cooling down with countdown" },
       { key: "models.list", label: "NVIDIA Models in Picker", kind: "stringlist", desc: "NVIDIA NIM model ids shown in the chat picker (unprefixed)" },
     ],
   },
@@ -162,6 +165,7 @@ export class WrightSettingsPanel {
   private static current: WrightSettingsPanel | undefined;
   private readonly panel: vscode.WebviewPanel;
   private readonly disposables: vscode.Disposable[] = [];
+  private healthTimer: ReturnType<typeof setInterval> | undefined;
 
   static show(extensionUri: vscode.Uri): void {
     if (WrightSettingsPanel.current) {
@@ -183,17 +187,48 @@ export class WrightSettingsPanel {
 
     this.disposables.push(
       this.panel.webview.onDidReceiveMessage((msg: { type: string; key?: string; value?: unknown }) => {
-        if (msg.type === "ready") this.postValues();
+        if (msg.type === "ready") {
+          this.postValues();
+          this.postKeyHealth();
+        }
         if (msg.type === "set" && msg.key) void this.set(msg.key, msg.value);
         if (msg.type === "openVSCodeSettings") void vscode.commands.executeCommand("workbench.action.openSettings", "wright");
       }),
       vscode.workspace.onDidChangeConfiguration((e) => {
         if (e.affectsConfiguration("wright") || e.affectsConfiguration("chat.disableAIFeatures")) {
           this.postValues();
+          this.postKeyHealth();
         }
       }),
+      { dispose: keyHealth.subscribe(() => this.postKeyHealth()) },
     );
+    // Tick countdown while the panel is open.
+    this.healthTimer = setInterval(() => this.postKeyHealth(), 1_000);
     this.panel.onDidDispose(() => this.dispose(), null, this.disposables);
+  }
+
+  private postKeyHealth(): void {
+    const cfg = vscode.workspace.getConfiguration("wright");
+    const extra = (cfg.get<string[]>("nvidia.apiKeys") ?? []).map((k) => k.trim()).filter(Boolean);
+    const primary = cfg.get<string>("nvidia.apiKey")?.trim();
+    const pool = [...(primary ? [primary] : []), ...extra].filter((k, i, a) => a.indexOf(k) === i);
+    const snaps = keyHealth.snapshotForKeys(pool);
+    const byKey: Record<string, { state: string; remainingSec?: number; limitedUntil?: number; label: string }> = {};
+    for (let i = 0; i < pool.length; i++) {
+      const s = snaps[i]!;
+      byKey[pool[i]!] = {
+        state: s.state,
+        remainingSec: s.remainingSec,
+        limitedUntil: s.limitedUntil,
+        label: s.label,
+      };
+    }
+    const limited = snaps.filter((s) => s.state === "limited").length;
+    void this.panel.webview.postMessage({
+      type: "keyHealth",
+      byKey,
+      summary: { total: snaps.length, limited, ok: snaps.length - limited },
+    });
   }
 
   private async set(key: string, value: unknown): Promise<void> {
@@ -238,6 +273,7 @@ export class WrightSettingsPanel {
   }
 
   private dispose(): void {
+    if (this.healthTimer) clearInterval(this.healthTimer);
     WrightSettingsPanel.current = undefined;
     for (const d of this.disposables.splice(0)) d.dispose();
   }
@@ -303,10 +339,33 @@ export class WrightSettingsPanel {
   .tag {
     display: inline-flex; align-items: center; gap: 6px; padding: 3px 8px; border-radius: 4px;
     background: var(--vscode-badge-background); color: var(--vscode-badge-foreground); font-size: 12px;
+    border: 1px solid transparent;
+  }
+  .tag .dot {
+    width: 8px; height: 8px; border-radius: 50%; flex: none;
+    background: #3fb950; box-shadow: 0 0 0 1px rgba(0,0,0,.2);
+  }
+  .tag.health-ok .dot { background: #3fb950; }
+  .tag.health-limited {
+    border-color: rgba(210, 153, 34, .55);
+    background: color-mix(in srgb, #d29922 18%, var(--vscode-badge-background));
+  }
+  .tag.health-limited .dot { background: #d29922; }
+  .tag.health-hot {
+    border-color: rgba(248, 81, 73, .65);
+    background: color-mix(in srgb, #f85149 18%, var(--vscode-badge-background));
+  }
+  .tag.health-hot .dot { background: #f85149; }
+  .tag .countdown {
+    font-variant-numeric: tabular-nums; opacity: .9; font-size: 11px; min-width: 2.2em;
   }
   .tag button { border: none; background: none; color: inherit; cursor: pointer; padding: 0; font-size: 13px; line-height: 1; opacity: .7; }
   .tag button:hover { opacity: 1; }
   .tags input { flex: 1 1 160px; min-width: 140px; }
+  .key-health-summary {
+    font-size: 11px; opacity: .75; margin-top: 2px;
+  }
+  .key-health-summary .pct { font-weight: 600; }
   .json-status { font-size: 11px; margin-top: 4px; }
   .json-status.err { color: var(--vscode-errorForeground); }
   .json-status.ok { color: var(--vscode-testing-iconPassed, #73c991); opacity: .8; }
@@ -326,7 +385,10 @@ export class WrightSettingsPanel {
   const vscodeApi = acquireVsCodeApi();
   const SECTIONS = ${JSON.stringify(SECTIONS)};
   let values = {};
+  let keyHealthByKey = {};
+  let keyHealthSummary = { total: 0, limited: 0, ok: 0 };
   let flashTimer;
+  const keyTagRerenders = [];
 
   function flash() {
     const el = document.getElementById("flash");
@@ -338,6 +400,32 @@ export class WrightSettingsPanel {
     values[key] = value;
     vscodeApi.postMessage({ type: "set", key, value });
     flash();
+  }
+
+  function maskKey(key) {
+    if (!key) return "";
+    const tip = key.slice(-4);
+    if (key.length <= 10) return "••••" + tip;
+    return key.slice(0, 6) + "…" + tip;
+  }
+
+  function applyKeyHealth(tag, rawKey) {
+    const h = keyHealthByKey[rawKey];
+    tag.classList.remove("health-ok", "health-limited", "health-hot");
+    let countdown = tag.querySelector(".countdown");
+    if (!h || h.state === "ok") {
+      tag.classList.add("health-ok");
+      if (countdown) countdown.remove();
+      return;
+    }
+    const sec = h.remainingSec || 0;
+    tag.classList.add(sec > 45 ? "health-hot" : "health-limited");
+    if (!countdown) {
+      countdown = document.createElement("span");
+      countdown.className = "countdown";
+      tag.insertBefore(countdown, tag.querySelector("button"));
+    }
+    countdown.textContent = sec + "s";
   }
 
   function control(f) {
@@ -370,17 +458,47 @@ export class WrightSettingsPanel {
       wrap.classList.add("wide");
       const tags = document.createElement("div"); tags.className = "tags";
       const items = Array.isArray(v) ? [...v] : [];
+      const summary = f.keyHealth ? document.createElement("div") : null;
+      if (summary) summary.className = "key-health-summary";
       const renderTags = () => {
         tags.textContent = "";
         for (let i = 0; i < items.length; i++) {
+          const raw = items[i];
           const tag = document.createElement("span"); tag.className = "tag";
-          const text = document.createElement("span"); text.textContent = items[i];
+          if (f.keyHealth) {
+            tag.dataset.key = raw;
+            const dot = document.createElement("span"); dot.className = "dot"; dot.title = "Key health";
+            tag.append(dot);
+          }
+          const text = document.createElement("span");
+          text.textContent = f.keyHealth ? maskKey(raw) : raw;
+          text.title = f.keyHealth ? raw : "";
           const del = document.createElement("button"); del.textContent = "×"; del.title = "Remove";
           del.addEventListener("click", () => { items.splice(i, 1); save(f.key, [...items]); renderTags(); });
-          tag.append(text, del); tags.append(tag);
+          tag.append(text, del);
+          if (f.keyHealth) applyKeyHealth(tag, raw);
+          tags.append(tag);
         }
         tags.append(input);
+        if (summary) updateSummary();
       };
+      const updateSummary = () => {
+        if (!summary) return;
+        const poolExtra = items.length;
+        const limitedExtra = items.filter((k) => keyHealthByKey[k]?.state === "limited").length;
+        const okExtra = poolExtra - limitedExtra;
+        const pct = poolExtra === 0 ? 100 : Math.round((okExtra / poolExtra) * 100);
+        summary.innerHTML = poolExtra === 0
+          ? "No extra keys yet — add free-tier keys to rotate on 429"
+          : '<span class="pct">' + pct + '% ready</span> · ' + okExtra + ' healthy · ' + limitedExtra + ' cooling';
+      };
+      const refreshHealth = () => {
+        for (const tag of tags.querySelectorAll(".tag[data-key]")) {
+          applyKeyHealth(tag, tag.dataset.key);
+        }
+        updateSummary();
+      };
+      if (f.keyHealth) keyTagRerenders.push(refreshHealth);
       const input = document.createElement("input"); input.type = "text"; input.placeholder = "Type and press Enter…";
       input.addEventListener("keydown", (e) => {
         if (e.key === "Enter" && input.value.trim()) {
@@ -390,6 +508,7 @@ export class WrightSettingsPanel {
       });
       renderTags();
       wrap.append(tags);
+      if (summary) wrap.append(summary);
     } else if (f.kind === "json") {
       wrap.classList.add("wide");
       const holder = document.createElement("div"); holder.style.width = "100%";
@@ -411,6 +530,7 @@ export class WrightSettingsPanel {
   }
 
   function renderAll() {
+    keyTagRerenders.length = 0;
     const nav = document.getElementById("nav");
     const main = document.getElementById("main");
     const active = document.querySelector("nav button.active")?.dataset.id || SECTIONS[0].id;
@@ -449,6 +569,11 @@ export class WrightSettingsPanel {
   document.getElementById("openRaw").addEventListener("click", () => vscodeApi.postMessage({ type: "openVSCodeSettings" }));
   window.addEventListener("message", (e) => {
     if (e.data.type === "config") { values = e.data.values; renderAll(); }
+    if (e.data.type === "keyHealth") {
+      keyHealthByKey = e.data.byKey || {};
+      keyHealthSummary = e.data.summary || { total: 0, limited: 0, ok: 0 };
+      for (const fn of keyTagRerenders) fn();
+    }
   });
   vscodeApi.postMessage({ type: "ready" });
 </script>

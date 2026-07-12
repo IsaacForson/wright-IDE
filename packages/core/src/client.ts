@@ -11,6 +11,7 @@ import type { ProviderConfig } from "./provider.js";
 import { ModelError, errorFromResponse } from "./errors.js";
 import { parseSSE } from "./sse.js";
 import { withRetry, type RetryOptions } from "./retry.js";
+import { keyHealth } from "./keyHealth.js";
 
 export interface RequestOptions {
   signal?: AbortSignal;
@@ -263,11 +264,23 @@ export class ModelClient {
           }
           if (!res.ok) {
             const body = await res.text().catch(() => "");
-            throw errorFromResponse(res.status, body, res.headers.get("retry-after"));
+            const err = errorFromResponse(res.status, body, res.headers.get("retry-after"));
+            if (err.kind === "rate_limit" && key) keyHealth.markLimited(key, err.retryAfter);
+            throw err;
           }
           return res;
         },
-        { ...opts.retry, signal: opts.signal, noRateLimitRetry },
+        {
+          ...opts.retry,
+          signal: opts.signal,
+          noRateLimitRetry,
+          onRetry: (err, attempt, delayMs) => {
+            if (err.kind === "rate_limit" && key) {
+              keyHealth.markLimited(key, err.retryAfter ?? Math.ceil(delayMs / 1000));
+            }
+            opts.retry?.onRetry?.(err, attempt, delayMs);
+          },
+        },
       );
     };
 
@@ -284,6 +297,7 @@ export class ModelClient {
         lastErr = err;
         const kind = err instanceof ModelError ? err.kind : undefined;
         if ((kind === "rate_limit" || kind === "auth") && !opts.signal?.aborted) {
+          if (kind === "rate_limit" && key) keyHealth.markLimited(key, (err as ModelError).retryAfter);
           this.keyIndex++; // advance for this loop and future calls
           this.provider.apiKeys && opts.retry?.onRetry?.(err as ModelError, tried + 1, 0);
           continue;
