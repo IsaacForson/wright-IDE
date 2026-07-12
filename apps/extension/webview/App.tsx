@@ -325,6 +325,22 @@ export function App() {
   /** Latest wright.defaultMode from settings — re-applied on every New Chat. */
   const lastDefaultMode = useRef<ChatMode>("agent");
 
+  const COMPOSER_MAX_PX = 360;
+
+  /** Grow the composer with content (paste / long messages) up to a cap. */
+  const resizeComposer = useCallback(() => {
+    const el = inputRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    const next = Math.min(Math.max(el.scrollHeight, 44), COMPOSER_MAX_PX);
+    el.style.height = `${next}px`;
+    el.style.overflowY = el.scrollHeight > COMPOSER_MAX_PX ? "auto" : "hidden";
+  }, []);
+
+  useEffect(() => {
+    resizeComposer();
+  }, [input, resizeComposer]);
+
   // Elapsed-seconds ticker for the status line.
   useEffect(() => {
     if (!busy) return;
@@ -992,13 +1008,18 @@ export function App() {
             ref={inputRef}
             value={input}
             placeholder={placeholder}
-            rows={2}
+            rows={1}
             onChange={(e) => {
               setInput(e.target.value);
               updateMention(e.target.value, e.target.selectionStart ?? e.target.value.length);
             }}
+            onInput={resizeComposer}
             onKeyDown={onKeyDown}
-            onPaste={onPaste}
+            onPaste={(e) => {
+              onPaste(e);
+              // Paste updates value async via setState; also resize after DOM updates.
+              requestAnimationFrame(() => resizeComposer());
+            }}
           />
 
           <div className="composer-bar">
@@ -1056,7 +1077,7 @@ export function App() {
             <div className="spacer" />
             {busy ? (
               <button
-                className="btn primary stop"
+                className="btn primary stop send-btn"
                 onClick={() => {
                   setPendingAsk(undefined);
                   post({ type: "stop" });
@@ -1066,8 +1087,13 @@ export function App() {
                 <Icon name="stop" size={13} />
               </button>
             ) : (
-              <button className="btn primary" onClick={send} disabled={!input.trim() && pendingImages.length === 0 && pendingFiles.length === 0} title="Send (Enter)">
-                <Icon name="send" size={13} />
+              <button
+                className="btn primary send-btn"
+                onClick={send}
+                disabled={!input.trim() && pendingImages.length === 0 && pendingFiles.length === 0}
+                title="Send (Enter)"
+              >
+                <Icon name="send" size={14} />
               </button>
             )}
           </div>

@@ -1618,13 +1618,16 @@ body.vscode-light .research-pill.research-deep {
   outline: none;
   resize: none;
   min-height: 44px;
-  max-height: 180px;
+  max-height: min(50vh, 360px);
+  overflow-y: auto;
+  field-sizing: content;
   background: transparent;
   color: var(--vscode-input-foreground);
   padding: 9px 11px 2px;
   font-family: inherit;
   font-size: 13px;
   line-height: 1.5;
+  box-sizing: border-box;
 }
 
 .composer textarea::placeholder {
@@ -1637,6 +1640,27 @@ body.vscode-light .research-pill.research-deep {
   align-items: center;
   gap: 3px;
   padding: 4px 6px 6px;
+}
+
+.send-btn {
+  width: 32px;
+  height: 32px;
+  min-width: 32px;
+  padding: 0;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  gap: 0;
+}
+
+.send-btn.btn.primary {
+  border-radius: 50%;
+}
+
+.send-btn.btn.primary.stop {
+  border-radius: 50%;
 }
 
 .session-stats {
