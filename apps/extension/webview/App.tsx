@@ -333,6 +333,7 @@ export function App() {
   const [pendingFiles, setPendingFiles] = useState<FileAttachment[]>([]);
   const [mention, setMention] = useState<MentionState | undefined>();
   const [dragOver, setDragOver] = useState(false);
+  const dragDepth = useRef(0);
   const [status, setStatus] = useState("Working");
   const [elapsed, setElapsed] = useState(0);
   /** Seconds left on the "big task — plan first?" countdown; undefined = hidden. */
@@ -388,6 +389,28 @@ export function App() {
     const timer = setInterval(() => setElapsed(Math.round((Date.now() - turnStart.current) / 1000)), 1000);
     return () => clearInterval(timer);
   }, [busy]);
+
+  // Drop overlay can stick if a drag is cancelled outside the webview (Esc /
+  // drop on editor). Always clear on dragend/drop/Escape.
+  useEffect(() => {
+    const clearDrag = () => {
+      dragDepth.current = 0;
+      setDragOver(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") clearDrag();
+    };
+    window.addEventListener("dragend", clearDrag, true);
+    window.addEventListener("drop", clearDrag, true);
+    window.addEventListener("keydown", onKey, true);
+    window.addEventListener("blur", clearDrag);
+    return () => {
+      window.removeEventListener("dragend", clearDrag, true);
+      window.removeEventListener("drop", clearDrag, true);
+      window.removeEventListener("keydown", onKey, true);
+      window.removeEventListener("blur", clearDrag);
+    };
+  }, []);
 
   useEffect(() => {
     const onMessage = (event: MessageEvent<HostToWebview>) => {
@@ -731,27 +754,36 @@ export function App() {
     <div
       className={`app${dragOver ? " drag-over" : ""}`}
       onDragEnter={(e) => {
+        // Ignore non-file drags (tabs, text, tree items without files).
+        if (![...e.dataTransfer.types].includes("Files")) return;
         e.preventDefault();
+        dragDepth.current += 1;
         setDragOver(true);
       }}
       onDragOver={(e) => {
+        if (![...e.dataTransfer.types].includes("Files")) return;
         e.preventDefault();
         e.dataTransfer.dropEffect = "copy";
-        setDragOver(true);
       }}
       onDragLeave={(e) => {
-        if (e.currentTarget === e.target) setDragOver(false);
+        const next = e.relatedTarget as Node | null;
+        // Still inside the panel — nested enter/leave noise.
+        if (next && e.currentTarget.contains(next)) return;
+        dragDepth.current = Math.max(0, dragDepth.current - 1);
+        if (dragDepth.current === 0) setDragOver(false);
       }}
       onDrop={(e) => {
         e.preventDefault();
+        dragDepth.current = 0;
         setDragOver(false);
         addDropped(e.dataTransfer);
       }}
     >
       {dragOver && (
-        <div className="drop-overlay">
+        <div className="drop-overlay" aria-hidden>
           <Icon name="attach" size={28} />
           <span>Drop files to attach as context</span>
+          <span className="drop-overlay-hint">Esc to cancel</span>
         </div>
       )}
 
