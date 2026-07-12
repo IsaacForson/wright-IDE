@@ -7,9 +7,12 @@ import {
   PROVIDER_CATALOG,
   TrackedHost,
   agentSystemPrompt,
+  estimateConversationTokens,
+  parseModelRef,
   type ApprovalMode,
   type ChatMessage,
   createBuiltinTools,
+  createAskUserTool,
   createCodebaseSearchTool,
   createReadUrlTool,
   createWebSearchTool,
@@ -18,6 +21,7 @@ import {
   generatePlan,
   nvidiaProvider,
   planContext,
+  type AskUserPayload,
 } from "@wright/core";
 import { NodeWorkspaceHost, connectMcpServers, loadRulesFile, type McpConnection, type McpServerConfig } from "@wright/core/node";
 import { IndexService } from "./IndexService.js";
@@ -78,6 +82,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private localModels: string[] = [];
   /** A big-looking agent task parked while the user decides Plan vs Agent. */
   private pendingSuggest: { text: string; images?: string[]; files?: FileAttachment[]; research: ResearchMode } | undefined;
+  /** In-flight ask_user tool — resolved when the webview submits picks. */
+  private pendingAsk:
+    | { id: string; resolve: (text: string) => void; reject: (err: Error) => void }
+    | undefined;
 
   constructor(
     private readonly extensionUri: vscode.Uri,
@@ -276,6 +284,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     const config = getConfig();
     const models = buildPickerModels(config.modelList, this.localModels);
     if (!models.includes(this.model)) models.splice(1, 0, this.model);
+    const meter = this.contextMeter();
     this.post({
       type: "state",
       items: this.items,
@@ -287,7 +296,41 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       approvalMode: this.approvalMode,
       sessionStats: this.formatSessionStats(),
       defaultMode: config.defaultMode,
+      contextUsage: meter?.usage,
+      contextMeterEnabled: meter?.enabled ?? false,
     });
+  }
+
+  /** NVIDIA is RPM-limited — no token meter. Cloud/token models get a fill ring. */
+  private contextMeterEnabled(): boolean {
+    const ref = this.model === "auto" ? getConfig().chatModel : this.model;
+    const { providerId } = parseModelRef(ref);
+    return providerId !== "nvidia";
+  }
+
+  private contextWindowTokens(): number {
+    const ref = this.model === "auto" ? getConfig().chatModel : this.model;
+    const { providerId, model } = parseModelRef(ref);
+    if (providerId === "gemini" || /gemini/i.test(model)) return 1_000_000;
+    if (providerId === "openrouter" && /gemini|claude|gpt-oss|laguna|nemotron/i.test(model)) return 128_000;
+    if (providerId === "ollama") return 32_768;
+    return 128_000;
+  }
+
+  private contextMeter(): { enabled: boolean; usage: number } | undefined {
+    const enabled = this.contextMeterEnabled();
+    if (!enabled) return { enabled: false, usage: 0 };
+    const messages = this.agent ? [...this.agent.history] : (this.savedMessages ?? []);
+    if (messages.length === 0) return { enabled: true, usage: 0 };
+    const used = estimateConversationTokens(messages);
+    const inputBudget = Math.max(4_000, this.contextWindowTokens() - 8_192);
+    return { enabled: true, usage: Math.min(1, used / inputBudget) };
+  }
+
+  private pushContextUsage(): void {
+    const meter = this.contextMeter();
+    if (!meter) return;
+    this.post({ type: "contextUsage", usage: meter.usage, enabled: meter.enabled });
   }
 
   private formatSessionStats(): string | undefined {
@@ -316,8 +359,23 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       case "newChat":
         this.newChat();
         return;
+      case "summarizeChat":
+        await this.summarizeIntoNewChat();
+        return;
+      case "askUserAnswer": {
+        if (this.pendingAsk && this.pendingAsk.id === msg.id) {
+          const { resolve } = this.pendingAsk;
+          this.pendingAsk = undefined;
+          resolve(msg.text);
+        }
+        return;
+      }
       case "stop":
         this.abort?.abort();
+        if (this.pendingAsk) {
+          this.pendingAsk.reject(new ModelError("aborted", "Question cancelled"));
+          this.pendingAsk = undefined;
+        }
         return;
       case "setModel":
         this.model = msg.model;
@@ -423,7 +481,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       }
       case "copyText":
         await vscode.env.clipboard.writeText(msg.text);
-        vscode.window.setStatusBarMessage("Wright: code copied", 2_500);
+        vscode.window.setStatusBarMessage("Wright: copied", 2_500);
         return;
       case "applyCode":
         await this.applyCodeToActiveFile(msg.code);
@@ -806,8 +864,36 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     tools.push(createWebSearchTool(config.webSearch));
     tools.push(createReadUrlTool());
     tools.push(createDiagnosticsTool());
+    tools.push(
+      createAskUserTool(async (payload, signal) => {
+        const id = `ask${Date.now().toString(36)}`;
+        return await new Promise<string>((resolve, reject) => {
+          if (this.pendingAsk) {
+            this.pendingAsk.reject(new Error("Superseded by a newer ask_user call."));
+          }
+          this.pendingAsk = { id, resolve, reject };
+          this.post({ type: "askUser", id, questions: payload.questions });
+          const onAbort = () => {
+            if (this.pendingAsk?.id === id) {
+              this.pendingAsk = undefined;
+              reject(new ModelError("aborted", "Question cancelled"));
+            }
+          };
+          signal?.addEventListener("abort", onAbort, { once: true });
+        });
+      }),
+    );
     if (mode === "ask") {
-      const readOnly = new Set(["read_file", "list_dir", "search", "codebase_search", "web_search", "read_url", "get_diagnostics"]);
+      const readOnly = new Set([
+        "read_file",
+        "list_dir",
+        "search",
+        "codebase_search",
+        "web_search",
+        "read_url",
+        "get_diagnostics",
+        "ask_user",
+      ]);
       tools = tools.filter((t) => readOnly.has(t.definition.function.name));
     }
     const rules = root ? await loadRulesFile(root.fsPath) : undefined;
@@ -1098,7 +1184,151 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       if (getConfig().autoKeep) this.tracker?.keepAll();
       this.persistSession();
       this.sendState(false);
+      this.pushContextUsage();
+      void this.maybeAutoCompact();
     }
+  }
+
+  /**
+   * Manual Summarize: compress this chat and open a fresh session seeded with
+   * the summary so the user can continue without re-explaining.
+   */
+  private async summarizeIntoNewChat(): Promise<void> {
+    const messages = this.agent ? [...this.agent.history] : (this.savedMessages ?? []);
+    const usable = messages.filter((m) => m.role !== "system");
+    if (usable.length < 2) {
+      vscode.window.showInformationMessage("Wright: not enough conversation to summarize yet.");
+      return;
+    }
+    this.post({ type: "summarizing", active: true });
+    try {
+      const summary = await this.generateConversationSummary(messages);
+      this.persistSession();
+      this.abort?.abort();
+      this.agent = undefined;
+      this.agentBuiltFor = undefined;
+      this.tracker = undefined;
+      this.pendingPlan = undefined;
+      this.sessionId = `s${Date.now().toString(36)}`;
+      const seedUser: ChatMessage = {
+        role: "user",
+        content:
+          "Continue from this summary of our previous chat. Treat it as the established context and keep going from where we left off.",
+      };
+      const seedAssistant: ChatMessage = {
+        role: "assistant",
+        content: summary,
+      };
+      this.savedMessages = [seedUser, seedAssistant];
+      this.items = [
+        {
+          kind: "text",
+          role: "assistant",
+          content:
+            "**Conversation summary** (continued from previous chat)\n\n" +
+            summary +
+            "\n\n---\nReady when you are — pick up from here.",
+        },
+      ];
+      this.sendState(false);
+      this.post({ type: "chatCleared" });
+      this.pushContextUsage();
+      vscode.window.setStatusBarMessage("Wright: opened a new chat with the summary", 4_000);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      this.post({ type: "error", message: `Summarize failed: ${message}` });
+    } finally {
+      this.post({ type: "summarizing", active: false });
+    }
+  }
+
+  /**
+   * Auto-compact (Cursor-style): when a token-based model's context fills,
+   * replace history with a summary in the *same* chat so work can continue.
+   */
+  private async maybeAutoCompact(): Promise<void> {
+    if (!this.contextMeterEnabled()) return;
+    const meter = this.contextMeter();
+    if (!meter || meter.usage < 0.85) return;
+    const messages = this.agent ? [...this.agent.history] : (this.savedMessages ?? []);
+    if (messages.filter((m) => m.role !== "system").length < 4) return;
+
+    this.post({ type: "summarizing", active: true });
+    try {
+      const summary = await this.generateConversationSummary(messages);
+      const compacted: ChatMessage[] = [
+        {
+          role: "user",
+          content:
+            "Context was auto-compacted because the window was nearly full. Continue from this summary of our work so far.",
+        },
+        { role: "assistant", content: summary },
+      ];
+      this.savedMessages = compacted;
+      if (this.agent) this.agent.restoreHistory(compacted);
+      this.items = [
+        {
+          kind: "text",
+          role: "assistant",
+          content:
+            "**Context auto-summarized** (window was nearly full)\n\n" +
+            summary +
+            "\n\n---\nContinuing in this chat with a compressed history.",
+        },
+      ];
+      this.persistSession();
+      this.sendState(false);
+      this.pushContextUsage();
+    } catch {
+      // Auto-compact is best-effort; leave history intact on failure.
+    } finally {
+      this.post({ type: "summarizing", active: false });
+    }
+  }
+
+  private async generateConversationSummary(messages: ChatMessage[]): Promise<string> {
+    const { client, agentModel } = await buildFailoverClient(this.model, { requireOllamaIfPrimary: false });
+    const transcript = messages
+      .filter((m) => m.role !== "system")
+      .map((m) => {
+        if (m.role === "tool") {
+          return `TOOL(${m.tool_call_id}): ${String(m.content).slice(0, 800)}`;
+        }
+        if (m.role === "assistant") {
+          const tools = m.tool_calls?.map((t) => `${t.function.name}(${t.function.arguments.slice(0, 200)})`).join("; ");
+          const body = (m.content ?? "").slice(0, 4_000);
+          return tools ? `ASSISTANT: ${body}\n[tools: ${tools}]` : `ASSISTANT: ${body}`;
+        }
+        if (m.role === "user") {
+          const body = typeof m.content === "string" ? m.content : m.content.map((p) => (p.type === "text" ? p.text : "[image]")).join(" ");
+          return `USER: ${body.slice(0, 4_000)}`;
+        }
+        return "";
+      })
+      .filter(Boolean)
+      .join("\n\n")
+      .slice(0, 60_000);
+
+    const result = await client.complete({
+      model: agentModel,
+      max_tokens: 2_048,
+      messages: [
+        {
+          role: "system",
+          content:
+            "You compress a coding-agent conversation into a dense handoff summary. " +
+            "Keep: goal, decisions, files touched/created, current state, remaining work, and anything the next turn must not forget. " +
+            "Drop: chatter, failed dead-ends, and raw tool dumps. Use short markdown sections. No preamble.",
+        },
+        {
+          role: "user",
+          content: `Summarize this chat for continuing the same task:\n\n${transcript}`,
+        },
+      ],
+    });
+    const text = result.message.content?.trim();
+    if (!text) throw new Error("Model returned an empty summary");
+    return text;
   }
 
   /**

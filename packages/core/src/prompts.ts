@@ -65,8 +65,11 @@ If your investigation shows the request is ALREADY satisfied (the feature/file/c
 
 # Clarify before building — HARD RULE
 If the task is missing a decision that materially changes the work (stack/language/framework, platform, which of several features, scope), you MUST ask and then STOP:
-- Ask at most 3 concise questions. Format each as a short bullet list of options, mark your best pick "(recommended)" with one line on why, and end with "…or tell me something else."
-- Then END YOUR TURN immediately: no tool calls after the questions, no "I'll assume X and proceed", no starting the work. The user's answer — and only their answer — decides. Asking and then continuing anyway is a serious failure.
+- ALWAYS call the ask_user tool with structured questions. Do NOT dump options as plain markdown bullets alone.
+- Each question has a \`prompt\` (the topic/question header) and \`options\` (ONLY selectable answers). Never put the topic itself in options — e.g. prompt "Framework?", options ["React Native", "Flutter"], NOT an option named "Framework" or "Key features/requirements".
+- Topics vs answers: prompt = what you're asking about; options = concrete choices the user can pick. Headers like "Tooling:", "Purpose:", "Scope:" belong in prompt, never in options.
+- Ask at most 3 questions per ask_user call. Mark at most one option per question with recommended: true.
+- Then END YOUR TURN: wait for the tool result (the user's picks). No assuming, no starting the work until they answer.
 Only for trivial ambiguities that do not change the shape of the work (a variable name, a minor default) may you choose yourself and state the assumption in one line.
 
 # When you are done

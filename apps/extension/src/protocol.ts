@@ -32,6 +32,8 @@ export type WebviewToHost =
   | { type: "queryFiles"; query: string; token: number }
   | { type: "planDecision"; usePlan: boolean }
   | { type: "openFile"; path: string }
+  | { type: "summarizeChat" }
+  | { type: "askUserAnswer"; id: string; text: string }
   | { type: "copyText"; text: string }
   | { type: "applyCode"; code: string }
   | { type: "listSessions" }
@@ -73,6 +75,10 @@ export type HostToWebview =
       approvalMode: "manual" | "auto-edit" | "auto";
       sessionStats?: string;
       defaultMode: ChatMode;
+      /** 0–1 context fill for token-based models; undefined hides the meter (NVIDIA RPM). */
+      contextUsage?: number;
+      /** True when auto-compaction applies for this model. */
+      contextMeterEnabled?: boolean;
     }
   | { type: "attachSelection"; file: FileAttachment }
   | { type: "toggleHistory" }
@@ -92,4 +98,16 @@ export type HostToWebview =
   | { type: "fileList"; token: number; entries: Array<{ path: string; type: "file" | "dir" }> }
   | { type: "sessions"; sessions: Array<{ id: string; title: string; updatedAt: number; current: boolean }> }
   | { type: "turnDone"; stats?: string }
+  | { type: "contextUsage"; usage: number; enabled: boolean }
+  | { type: "summarizing"; active: boolean }
+  | {
+      type: "askUser";
+      id: string;
+      questions: Array<{
+        id: string;
+        prompt: string;
+        allow_multiple?: boolean;
+        options: Array<{ id: string; label: string; description?: string; recommended?: boolean }>;
+      }>;
+    }
   | { type: "error"; message: string };

@@ -152,8 +152,21 @@ export class Agent {
 
       for (const call of toolCalls) {
         if (runOpts.signal?.aborted) throw new ModelError("aborted", "Agent run cancelled");
-        const args = parseArgs(call.function.arguments);
-        yield { type: "tool_start", id: call.id, name: call.function.name, args: args.ok ? args.value : { _raw: call.function.arguments } };
+        const rawArgs = call.function.arguments;
+        const args = parseArgs(rawArgs);
+        // Providers re-validate prior tool_call JSON on the next turn. Repair
+        // (or neutralize) arguments in-place so a messy model emit can't 400 the loop.
+        if (args.ok) {
+          call.function.arguments = JSON.stringify(args.value);
+        } else {
+          call.function.arguments = "{}";
+        }
+        yield {
+          type: "tool_start",
+          id: call.id,
+          name: call.function.name,
+          args: args.ok ? args.value : { _raw: rawArgs },
+        };
         const { result, approved } = await this.executeCall(call, args, runOpts.signal);
         yield { type: "tool_done", id: call.id, name: call.function.name, result, approved };
         this.messages.push({
@@ -185,7 +198,12 @@ export class Agent {
     if (!args.ok) {
       return {
         approved: true,
-        result: { ok: false, output: `Invalid JSON in tool arguments: ${args.error}` },
+        result: {
+          ok: false,
+          output:
+            `Invalid JSON in tool arguments: ${args.error}. ` +
+            `Call the tool again with ONE JSON object only (no trailing text, no second object, no markdown fences).`,
+        },
       };
     }
 
@@ -219,11 +237,102 @@ export class Agent {
 
 type ParsedArgs = { ok: true; value: Record<string, unknown> } | { ok: false; error: string };
 
+/**
+ * Parse tool-call argument JSON. Models often append a second object, trailing
+ * prose, or markdown fences — extract the first complete value when possible.
+ */
 function parseArgs(raw: string): ParsedArgs {
-  if (!raw.trim()) return { ok: true, value: {} };
+  const cleaned = stripArgWrappers(raw);
+  if (!cleaned) return { ok: true, value: {} };
+
+  const direct = tryParseObject(cleaned);
+  if (direct) return { ok: true, value: direct };
+
+  const extracted = extractFirstJsonValue(cleaned);
+  if (extracted) {
+    const value = tryParseObject(extracted);
+    if (value) return { ok: true, value };
+  }
+
+  // Double-encoded: "\"{...}\"" or '"{\"a\":1}"'
+  if (
+    (cleaned.startsWith('"') && cleaned.endsWith('"')) ||
+    (cleaned.startsWith("'") && cleaned.endsWith("'"))
+  ) {
+    try {
+      const inner = JSON.parse(cleaned);
+      if (typeof inner === "string") {
+        const nested = parseArgs(inner);
+        if (nested.ok) return nested;
+      } else if (inner && typeof inner === "object" && !Array.isArray(inner)) {
+        return { ok: true, value: inner as Record<string, unknown> };
+      }
+    } catch {
+      /* fall through */
+    }
+  }
+
   try {
-    return { ok: true, value: JSON.parse(raw) as Record<string, unknown> };
+    JSON.parse(cleaned);
+    return { ok: false, error: "Tool arguments must be a JSON object" };
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) };
   }
 }
+
+function stripArgWrappers(raw: string): string {
+  let s = raw.trim();
+  // ```json ... ``` or ``` ... ```
+  const fence = s.match(/^```(?:json|JSON)?\s*\n?([\s\S]*?)\n?```\s*$/);
+  if (fence) s = fence[1]!.trim();
+  return s;
+}
+
+function tryParseObject(text: string): Record<string, unknown> | undefined {
+  try {
+    const value = JSON.parse(text) as unknown;
+    if (value && typeof value === "object" && !Array.isArray(value)) {
+      return value as Record<string, unknown>;
+    }
+  } catch {
+    /* ignore */
+  }
+  return undefined;
+}
+
+/** First complete `{...}` or `[...]` in `text`, respecting strings/escapes. */
+function extractFirstJsonValue(text: string): string | undefined {
+  const start = text.search(/[\{\[]/);
+  if (start < 0) return undefined;
+  const open = text[start]!;
+  const close = open === "{" ? "}" : "]";
+  let depth = 0;
+  let inString = false;
+  let escape = false;
+  for (let i = start; i < text.length; i++) {
+    const ch = text[i]!;
+    if (inString) {
+      if (escape) {
+        escape = false;
+      } else if (ch === "\\") {
+        escape = true;
+      } else if (ch === '"') {
+        inString = false;
+      }
+      continue;
+    }
+    if (ch === '"') {
+      inString = true;
+      continue;
+    }
+    if (ch === open) depth++;
+    else if (ch === close) {
+      depth--;
+      if (depth === 0) return text.slice(start, i + 1);
+    }
+  }
+  return undefined;
+}
+
+/** Exported for focused tests / debugging of tool-arg repair. */
+export const _parseArgsForTest = parseArgs;
