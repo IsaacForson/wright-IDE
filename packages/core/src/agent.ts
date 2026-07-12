@@ -41,6 +41,13 @@ export interface AgentOptions {
    * Cursor-style compaction — instead of only FIFO-trimming history.
    */
   selfSummarize?: boolean;
+  /**
+   * Cheap/fast model for mid-loop compaction. Defaults to `model`.
+   * Compaction is a handoff write — it does not need the main agent model.
+   */
+  summarizeModel?: string;
+  /** Optional client when the cheap model is on another provider than `client`. */
+  summarizeClient?: ModelClient;
 }
 
 export type AgentEvent =
@@ -241,7 +248,8 @@ export class Agent {
    * replace history with system + original goal + handoff (+ latest user ask).
    */
   private async selfSummarize(signal?: AbortSignal): Promise<string> {
-    const { client, model } = this.opts;
+    const client = this.opts.summarizeClient ?? this.opts.client;
+    const model = this.opts.summarizeModel ?? this.opts.model;
     const transcript = buildCompactTranscript(this.messages);
     const generation = this.summarizeGenerations + 1;
 

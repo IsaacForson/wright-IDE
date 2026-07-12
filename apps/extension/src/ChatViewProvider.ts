@@ -1202,10 +1202,23 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     }
     if (this.mcp) tools.push(...this.mcp.tools);
 
+    // Compaction is a short handoff — use the Settings → Fast model, not the agent brain.
+    let summarizeClient = client;
+    let summarizeModel = agentModel;
+    try {
+      const fast = await buildFailoverClient(config.fastModel, { requireOllamaIfPrimary: false });
+      summarizeClient = fast.client;
+      summarizeModel = fast.agentModel;
+    } catch {
+      // Fall back to the main agent model if the fast path isn't configured.
+    }
+
     const agent = new Agent({
       client,
       model: agentModel,
       tools,
+      summarizeClient,
+      summarizeModel,
       // Match the real model window so we don't silently drop the task brief at ~56k.
       budget: new ContextBudget({
         contextWindow: this.contextWindowTokens(),
@@ -1635,7 +1648,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   private async generateConversationSummary(messages: ChatMessage[]): Promise<string> {
-    const { client, agentModel } = await buildFailoverClient(this.model, { requireOllamaIfPrimary: false });
+    const config = getConfig();
+    const { client, agentModel } = await buildFailoverClient(config.fastModel, {
+      requireOllamaIfPrimary: false,
+    });
     const transcript = messages
       .filter((m) => m.role !== "system")
       .map((m) => {

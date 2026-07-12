@@ -341,7 +341,7 @@
         "wright.model.fast": {
           "type": "string",
           "default": "meta/llama-3.1-8b-instruct",
-          "description": "Cheap/fast model for lightweight tasks.",
+          "description": "Cheap/fast model for context compaction, inline edit, and commit messages.",
           "enum": [
             "meta/llama-3.1-8b-instruct",
             "meta/llama-3.3-70b-instruct",

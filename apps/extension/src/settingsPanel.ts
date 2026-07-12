@@ -144,7 +144,7 @@ const SECTIONS: Section[] = [
     icon: "chip",
     fields: [
       { key: "model.chat", label: "Default Chat Model (NVIDIA)", kind: "select", optionsFromModelList: true, desc: "Used for Auto and as NVIDIA's failover model. Prefer picking a provider model in the chat picker for primary" },
-      { key: "model.fast", label: "Fast Model (NVIDIA)", kind: "select", optionsFromModelList: true, desc: "Cheap/fast NVIDIA model for inline edit and commit messages when no other provider is selected" },
+      { key: "model.fast", label: "Fast Model (NVIDIA)", kind: "select", optionsFromModelList: true, desc: "Cheap/fast model for context compaction, inline edit, and commit messages" },
       { key: "model.vision", label: "Vision Model", kind: "select", options: ["meta/llama-4-maverick-17b-128e-instruct", "meta/llama-3.2-90b-vision-instruct"], desc: "Multimodal model used when a chat message includes an image (NVIDIA)" },
       { key: "model.embed", label: "Embedding Model", kind: "select", options: ["nvidia/nv-embedcode-7b-v1"], desc: "Embedding model for codebase indexing — still NVIDIA for this release" },
     ],
