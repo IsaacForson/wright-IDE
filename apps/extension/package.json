@@ -293,8 +293,8 @@
         "wright.providers.cerebras.models": {
           "type": "array",
           "items": { "type": "string" },
-          "default": ["llama-3.3-70b", "qwen-3-32b"],
-          "description": "Cerebras model ids shown in the picker."
+          "default": ["gpt-oss-120b", "zai-glm-4.7", "gemma-4-31b"],
+          "description": "Cerebras model ids for the picker. llama-3.3-70b / qwen-3-32b were deprecated — use gpt-oss-120b."
         },
         "wright.providers.mistral.enabled": {
           "type": "boolean",

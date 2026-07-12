@@ -98,8 +98,9 @@ export const PROVIDER_CATALOG: Record<string, CatalogProvider> = {
     name: "Cerebras",
     baseUrl: "https://api.cerebras.ai/v1",
     supportsTools: true,
-    suggestedModels: ["llama-3.3-70b", "qwen-3-32b"],
-    signupHint: "Free key at cloud.cerebras.ai — Llama 3.3 70B at extreme throughput",
+    // llama-3.3-70b / qwen-3-32b deprecated — migrate to GPT OSS / GLM.
+    suggestedModels: ["gpt-oss-120b", "zai-glm-4.7", "gemma-4-31b"],
+    signupHint: "Free key at cloud.cerebras.ai — gpt-oss-120b / GLM 4.7 at extreme speed",
     pickerHint: "cerebras · fastest",
   },
   mistral: {

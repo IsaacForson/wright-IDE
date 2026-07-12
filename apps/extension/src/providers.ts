@@ -57,9 +57,25 @@ const DEAD_GEMINI = new Set([
   "gemini-1.5-flash",
 ]);
 
+/** Cerebras ids removed from public endpoints (July 2026). */
+const DEAD_CEREBRAS = new Set([
+  "llama-3.3-70b",
+  "qwen-3-32b",
+  "llama3.1-8b",
+  "llama3.1-70b",
+  "qwen-3-235b-a22b",
+  "qwen-3-235b-a22b-instruct-2507",
+  "qwen-3-235b-a22b-thinking-2507",
+  "qwen-3-coder-480b",
+  "llama-4-scout-17b-16e-instruct",
+  "llama-4-maverick-17b-128e-instruct",
+  "deepseek-r1-distill-llama-70b",
+]);
+
 const DEAD_MODELS_BY_PROVIDER: Partial<Record<CloudProviderId, Set<string>>> = {
   openrouter: DEAD_OPENROUTER_FREE,
   gemini: DEAD_GEMINI,
+  cerebras: DEAD_CEREBRAS,
 };
 
 /** Read enabled cloud providers with keys + model lists from settings. */
