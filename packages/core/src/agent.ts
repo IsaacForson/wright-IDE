@@ -3,12 +3,16 @@ import type { ChatMessage, ToolCall, Usage } from "./types.js";
 import type { Tool, ToolResult } from "./tools.js";
 import { ContextBudget } from "./tokens.js";
 import { ModelError } from "./errors.js";
+import { sleep } from "./retry.js";
 
 /**
  * The ReAct-style agent loop (Phase 3.2): model responds with text and/or
  * tool calls; tools execute; results feed back; repeat until the model
  * stops calling tools or the iteration cap is hit.
  */
+
+/** Default pause between tool results and the next model call (smooths RPM spikes). */
+export const DEFAULT_STEP_THROTTLE_MS = 500;
 
 export interface AgentOptions {
   client: ModelClient;
@@ -18,6 +22,11 @@ export interface AgentOptions {
   /** Loop safety cap (Phase 3.3). */
   maxIterations?: number;
   budget?: ContextBudget;
+  /**
+   * Mandatory delay after tools run, before the next autonomous model call.
+   * Defaults to 500ms. Set 0 to disable (tests).
+   */
+  stepThrottleMs?: number;
   /**
    * Approval gate: called before EVERY tool call. The host decides (via an
    * ApprovalPolicy + UI prompt) whether to allow. Return false to skip
@@ -152,6 +161,13 @@ export class Agent {
           tool_call_id: call.id,
           content: result.output || "(no output)",
         });
+      }
+
+      // Step-throttle: pause before the next model call so N tool rounds
+      // don't burst the provider's RPM ceiling (e.g. free-tier 40 RPM).
+      const throttleMs = this.opts.stepThrottleMs ?? DEFAULT_STEP_THROTTLE_MS;
+      if (throttleMs > 0) {
+        await sleep(throttleMs, runOpts.signal);
       }
     }
 

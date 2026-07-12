@@ -18,7 +18,7 @@ const execFileP = promisify(execFile);
  * extension share it and restarts are incremental.
  */
 
-const EMBED_BATCH = 24;
+const EMBED_BATCH = 32; // NVIDIA embeddings accept an input[] — pack chunks, not 1 req/chunk
 const MAX_FILE_BYTES = 200_000;
 const MAX_FILES = 4_000;
 const TEXT_EXTENSIONS = new Set([

@@ -5,15 +5,23 @@ import { Indexer } from "@wright/core/node";
 /**
  * Owns the codebase index inside VS Code (Phase 5.4): loads the shared
  * on-disk index, keeps it fresh on save, and exposes explicit rebuilds.
+ *
+ * Save-time embeds are debounced so a burst of saves (format-on-save,
+ * multi-file edits) collapses into one index pass instead of N RPM spikes.
  */
+
+const SAVE_DEBOUNCE_MS = 1_500;
+
 export class IndexService implements vscode.Disposable {
   private indexer: Indexer | undefined;
   private building = false;
   private readonly disposables: vscode.Disposable[] = [];
+  private readonly pendingSaves = new Set<string>();
+  private saveTimer: ReturnType<typeof setTimeout> | undefined;
 
   constructor(private readonly embedModel: string) {
     this.disposables.push(
-      vscode.workspace.onDidSaveTextDocument((doc) => void this.onSave(doc)),
+      vscode.workspace.onDidSaveTextDocument((doc) => this.queueSave(doc)),
     );
   }
 
@@ -61,18 +69,32 @@ export class IndexService implements vscode.Disposable {
     }
   }
 
-  private async onSave(doc: vscode.TextDocument): Promise<void> {
+  private queueSave(doc: vscode.TextDocument): void {
     if (!this.indexer || this.building || doc.uri.scheme !== "file") return;
     const rel = vscode.workspace.asRelativePath(doc.uri, false);
     if (rel.startsWith("..") || rel === doc.uri.fsPath) return; // outside the workspace
-    try {
-      await this.indexer.updateFile(rel);
-    } catch {
-      // save-time refresh is best-effort; the next full sync catches up
+    this.pendingSaves.add(rel);
+    if (this.saveTimer) clearTimeout(this.saveTimer);
+    this.saveTimer = setTimeout(() => void this.flushSaves(), SAVE_DEBOUNCE_MS);
+  }
+
+  private async flushSaves(): Promise<void> {
+    this.saveTimer = undefined;
+    const indexer = this.indexer;
+    if (!indexer || this.building || this.pendingSaves.size === 0) return;
+    const files = [...this.pendingSaves];
+    this.pendingSaves.clear();
+    for (const rel of files) {
+      try {
+        await indexer.updateFile(rel);
+      } catch {
+        // save-time refresh is best-effort; the next full sync catches up
+      }
     }
   }
 
   dispose(): void {
+    if (this.saveTimer) clearTimeout(this.saveTimer);
     for (const d of this.disposables) d.dispose();
   }
 }
