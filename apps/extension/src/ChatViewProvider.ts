@@ -32,6 +32,7 @@ import { RECOMMENDED_LOCAL_MODELS, deleteModel, ensureOllamaRunning, listLocalMo
 import { buildFailoverClient, buildPickerModels, getCloudProviders, hasAnyCloudCredential } from "./providers.js";
 import { getActiveFile, workspaceRoot } from "./workspace.js";
 import * as os from "node:os";
+import * as path from "node:path";
 import type { ChatMode, FileAttachment, HostToWebview, ResearchMode, UiItem, WebviewToHost } from "./protocol.js";
 import type { AgentMode } from "@wright/core";
 
@@ -496,8 +497,17 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       }
       case "openFile": {
         const base = workspaceRoot()?.fsPath ?? this.rootPath ?? os.homedir();
+        const rel = msg.path.replace(/\\/g, "/").replace(/^\.\//, "");
+        const uri = path.isAbsolute(rel)
+          ? vscode.Uri.file(rel)
+          : vscode.Uri.joinPath(vscode.Uri.file(base), rel);
         try {
-          await vscode.window.showTextDocument(vscode.Uri.joinPath(vscode.Uri.file(base), msg.path), { preview: true });
+          const stat = await vscode.workspace.fs.stat(uri);
+          if (stat.type & vscode.FileType.Directory) {
+            await vscode.commands.executeCommand("revealInExplorer", uri);
+          } else {
+            await vscode.window.showTextDocument(uri, { preview: true });
+          }
         } catch {
           vscode.window.showWarningMessage(`Wright: could not open ${msg.path}`);
         }
@@ -991,6 +1001,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       tools = tools.filter((t) => readOnly.has(t.definition.function.name));
     }
     const rules = root ? await loadRulesFile(root.fsPath) : undefined;
+    const userRules = config.userRules;
 
     // MCP tool servers (Phase 11), from wright.mcp.servers.
     if (!this.mcpAttempted) {
@@ -1014,10 +1025,17 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       // Deep research fans out into many search rounds; give it headroom.
       maxIterations: research === "deep" ? 60 : research === "research" ? 40 : 25,
       systemPrompt:
-        agentSystemPrompt({ workspaceName: vscode.workspace.name, rules, mode, research }) +
+        agentSystemPrompt({ workspaceName: vscode.workspace.name, rules, userRules, mode, research }) +
         (root ? "" : NO_WORKSPACE_NOTE),
       approve: async (name, args) => {
-        const decision = new ApprovalPolicy({ mode: this.approvalMode }).decide(name, args);
+        let decision = new ApprovalPolicy({ mode: this.approvalMode }).decide(name, args);
+        // Settings → Rules: confirm deletes even when approval mode would allow.
+        if (config.requireDeleteApproval && name === "run_command") {
+          const cmd = String(args.command ?? "");
+          if (/\b(rm|rmdir|unlink|del|Remove-Item|rd)\b/i.test(cmd)) {
+            decision = { action: "ask", reason: "delete requires your permission (Rules)" };
+          }
+        }
         if (decision.action === "allow") return true;
         const detail = name === "run_command" ? String(args.command ?? "") : `${name} → ${String(args.path ?? "")}`;
         const why = decision.reason ? ` (${decision.reason})` : "";

@@ -41,15 +41,24 @@ The user's request likely contains several tasks. Before acting, restate them as
 }
 
 export function agentSystemPrompt(
-  opts: { workspaceName?: string; rules?: string; mode?: AgentMode; research?: ResearchMode } = {},
+  opts: {
+    workspaceName?: string;
+    rules?: string;
+    userRules?: string;
+    mode?: AgentMode;
+    research?: ResearchMode;
+  } = {},
 ): string {
   const where = opts.workspaceName ? ` The workspace is "${opts.workspaceName}".` : "";
-  const rules = opts.rules
-    ? `\n\n# Project rules (from the user's rules file — always follow these)\n${opts.rules}`
+  const userRules = opts.userRules
+    ? `\n\n# User rules (from Wright Settings — HARD RULES, always obey)\n${opts.userRules}`
+    : "";
+  const projectRules = opts.rules
+    ? `\n\n# Project rules (from .wrightrules / .cursorrules — HARD RULES, always obey)\n${opts.rules}`
     : "";
   const mode = modePreamble(opts.mode ?? "agent");
   const research = researchPreamble(opts.research ?? "off");
-  return `You are Wright, an autonomous AI coding agent working inside the user's editor.${where} You accomplish tasks by calling tools in a loop: investigate, act, verify.${rules}${mode}${research}
+  return `You are Wright, an autonomous AI coding agent working inside the user's editor.${where} You accomplish tasks by calling tools in a loop: investigate, act, verify.${userRules}${projectRules}${mode}${research}
 
 # How to work
 - Explore before acting. Use search and read_file to understand existing code before changing it. Never edit a file you have not read this conversation.
@@ -59,6 +68,7 @@ export function agentSystemPrompt(
 - After making changes, verify them when possible (run the build, tests, or a syntax check via run_command). Fix what you broke.
 - Paths are relative to the workspace root.
 - Narrate briefly: one short sentence before tool calls saying what you're doing and why. Do not paste large code blocks into chat that you are already writing to files.
+- Obey User rules and Project rules above over any conflicting habit. If a rule conflicts with a user request in this chat, ask before proceeding.
 
 # Already done? Say so and stop — HARD RULE
 If your investigation shows the request is ALREADY satisfied (the feature/file/config exists and works), reply confirming exactly that and STOP. Do not redo it, do not build a variation or something adjacent "while you're at it". If you think they might have meant something different, ask — do not guess with edits.

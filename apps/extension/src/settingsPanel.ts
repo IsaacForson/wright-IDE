@@ -9,7 +9,7 @@ import { applyBuiltinChatVisibility, openBuiltinChatPanel } from "./builtinChat.
  * in the Wright IDE and in the standalone extension.
  */
 
-type FieldKind = "toggle" | "select" | "text" | "password" | "number" | "stringlist" | "json";
+type FieldKind = "toggle" | "select" | "text" | "password" | "number" | "stringlist" | "json" | "textarea";
 
 interface Field {
   key: string; // configuration key relative to configSection (default "wright")
@@ -26,6 +26,8 @@ interface Field {
   invert?: boolean;
   /** Show rate-limit health dots / countdown on stringlist tags (NVIDIA key pool). */
   keyHealth?: boolean;
+  /** textarea rows hint */
+  rows?: number;
 }
 
 interface Section {
@@ -60,6 +62,51 @@ const SECTIONS: Section[] = [
         label: "Built-in IDE Chat",
         kind: "toggle",
         desc: "Show the host Chat icon on the right next to Wright. Off only hides it while Wright is installed — uninstalling Wright always restores built-in chat",
+      },
+    ],
+  },
+  {
+    id: "rules",
+    title: "Rules",
+    icon: "law",
+    fields: [
+      {
+        key: "rules.alwaysAskFollowUps",
+        label: "Always ask follow-ups",
+        kind: "toggle",
+        desc: "When a request is ambiguous or underspecified, ask clarifying questions (ask_user) before making substantial changes",
+      },
+      {
+        key: "rules.requireDeleteApproval",
+        label: "Confirm before deleting",
+        kind: "toggle",
+        desc: "Always ask before running delete commands (rm, rmdir, etc.), even in auto modes",
+      },
+      {
+        key: "rules.noDriveByRefactors",
+        label: "No drive-by refactors",
+        kind: "toggle",
+        desc: "Only change what was asked — no unrelated cleanup or style rewrites",
+      },
+      {
+        key: "rules.explainBeforeEdits",
+        label: "Explain before editing",
+        kind: "toggle",
+        desc: "Briefly state the plan before editing or creating files",
+      },
+      {
+        key: "rules.items",
+        label: "Custom rules",
+        kind: "stringlist",
+        desc: "Short rules the agent must follow. Type a rule and press Enter to add. Example: Prefer TypeScript over JavaScript",
+      },
+      {
+        key: "rules.custom",
+        label: "Additional rules (freeform)",
+        kind: "textarea",
+        rows: 8,
+        placeholder: "Write longer standing instructions for Wright…",
+        desc: "Freeform instructions appended to every agent turn. Project rules from .wrightrules / .cursorrules in the workspace are also applied.",
       },
     ],
   },
@@ -454,6 +501,14 @@ export class WrightSettingsPanel {
       input.value = v === undefined || v === null ? "" : String(v);
       input.addEventListener("change", () => save(f.key, f.kind === "number" ? Number(input.value || 0) : input.value));
       wrap.append(input);
+    } else if (f.kind === "textarea") {
+      wrap.classList.add("wide");
+      const ta = document.createElement("textarea");
+      ta.rows = f.rows || 6;
+      ta.placeholder = f.placeholder || "";
+      ta.value = v === undefined || v === null ? "" : String(v);
+      ta.addEventListener("change", () => save(f.key, ta.value));
+      wrap.append(ta);
     } else if (f.kind === "stringlist") {
       wrap.classList.add("wide");
       const tags = document.createElement("div"); tags.className = "tags";
@@ -554,7 +609,7 @@ export class WrightSettingsPanel {
       sec.append(h);
       for (const f of s.fields) {
         const row = document.createElement("div"); row.className = "row";
-        if (f.kind === "json" || f.kind === "stringlist") row.classList.add("stacked");
+        if (f.kind === "json" || f.kind === "stringlist" || f.kind === "textarea") row.classList.add("stacked");
         const meta = document.createElement("div"); meta.className = "meta";
         const label = document.createElement("div"); label.className = "label"; label.textContent = f.label;
         const desc = document.createElement("div"); desc.className = "desc"; desc.textContent = f.desc;

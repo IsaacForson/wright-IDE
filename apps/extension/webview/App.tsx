@@ -48,8 +48,14 @@ marked.use({
   },
 });
 
-/** Event delegation for the Apply/Copy buttons injected into markdown. */
+/** Event delegation for Apply/Copy and file links in markdown. */
 function onMessagesClick(e: React.MouseEvent) {
+  const fileLink = (e.target as HTMLElement).closest("a.file-link") as HTMLAnchorElement | null;
+  if (fileLink?.dataset.path) {
+    e.preventDefault();
+    post({ type: "openFile", path: fileLink.dataset.path });
+    return;
+  }
   const btn = (e.target as HTMLElement).closest("button[data-act]") as HTMLElement | null;
   if (!btn) return;
   const card = btn.closest(".code-card") as HTMLElement | null;
@@ -68,7 +74,67 @@ function onMessagesClick(e: React.MouseEvent) {
 
 function renderMarkdown(text: string): string {
   const escaped = text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-  return marked.parse(escaped, { async: false }) as string;
+  // Preserve @path mentions as clickable file links through markdown parsing.
+  const tokens: string[] = [];
+  const withPlaceholders = escaped.replace(/(^|[\s(\[`])@([\w./\\-]+\/?)/g, (_, pre: string, path: string) => {
+    const cleaned = path.replace(/\/$/, "");
+    const i = tokens.length;
+    tokens.push(cleaned);
+    return `${pre}%%FILELINK${i}%%`;
+  });
+  let html = marked.parse(withPlaceholders, { async: false }) as string;
+  html = html.replace(/%%FILELINK(\d+)%%/g, (_, i: string) => {
+    const path = tokens[Number(i)] ?? "";
+    return `<a class="file-link" href="#" data-path="${path}" title="Open ${path}">@${path}</a>`;
+  });
+  // Backtick paths like `src/app.ts` → clickable when they look like files.
+  html = html.replace(/<code>([\w./\\-]+\.[a-zA-Z0-9]{1,12})<\/code>/g, (_, path: string) => {
+    if (path.includes("://")) return `<code>${path}</code>`;
+    return `<a class="file-link file-link-code" href="#" data-path="${path}" title="Open ${path}"><code>${path}</code></a>`;
+  });
+  return html;
+}
+
+/** Tools that Cursor folds into an "Explored / Read" activity group. */
+function isExploreTool(name: string): boolean {
+  return (
+    name === "list_dir" ||
+    name === "read_file" ||
+    name === "search" ||
+    name === "codebase_search" ||
+    name === "read_url" ||
+    name === "web_search" ||
+    name === "get_diagnostics"
+  );
+}
+
+type ToolItem = Extract<UiItem, { kind: "tool" }>;
+
+type MessageBlock =
+  | { type: "item"; item: UiItem; index: number }
+  | { type: "explore"; tools: ToolItem[]; startIndex: number };
+
+function groupMessageItems(items: UiItem[]): MessageBlock[] {
+  const blocks: MessageBlock[] = [];
+  let i = 0;
+  while (i < items.length) {
+    const item = items[i]!;
+    if (item.kind === "tool" && isExploreTool(item.name)) {
+      const tools: ToolItem[] = [];
+      const start = i;
+      while (i < items.length) {
+        const next = items[i]!;
+        if (next.kind !== "tool" || !isExploreTool(next.name)) break;
+        tools.push(next);
+        i++;
+      }
+      blocks.push({ type: "explore", tools, startIndex: start });
+      continue;
+    }
+    blocks.push({ type: "item", item, index: i });
+    i++;
+  }
+  return blocks;
 }
 
 const MODE_OPTIONS: SelectOption[] = [
@@ -853,34 +919,45 @@ export function App() {
             </div>
           </div>
         )}
-        {items.map((item, i) =>
-          item.kind === "text" ? (
-            // Prefer structured ask_user card when present; markdown picker is fallback only.
-            !pendingAsk &&
-            !busy &&
-            i === lastIndex &&
-            item.role === "assistant" &&
-            extractQuestionGroups(item.content).length > 0 ? (
+        {groupMessageItems(items).map((block) => {
+          if (block.type === "explore") {
+            return (
+              <ExploreGroup
+                key={`ex${block.startIndex}`}
+                tools={block.tools}
+                streaming={busy && block.startIndex + block.tools.length - 1 === lastIndex}
+              />
+            );
+          }
+          const item = block.item;
+          const i = block.index;
+          if (item.kind === "text") {
+            return !pendingAsk &&
+              !busy &&
+              i === lastIndex &&
+              item.role === "assistant" &&
+              extractQuestionGroups(item.content).length > 0 ? (
               <QuestionMessage key={i} content={item.content} onAnswer={sendValue} />
             ) : (
-            <TextMessage
-              key={i}
-              role={item.role}
-              content={item.content}
-              html={renderMarkdown(item.content || (busy && i === lastIndex ? "…" : ""))}
-              streaming={busy && i === lastIndex && item.role === "assistant"}
-              images={item.images}
-              files={item.files}
-            />
-            )
-          ) : item.kind === "thinking" ? (
-            <ThinkingBlock key={`th${i}`} item={item} streaming={busy && i === lastIndex} />
-          ) : item.kind === "write" ? (
-            <WriteBlock key={item.id + i} item={item} />
-          ) : (
-            <ToolRow key={item.id + i} item={item} />
-          ),
-        )}
+              <TextMessage
+                key={i}
+                role={item.role}
+                content={item.content}
+                html={renderMarkdown(item.content || (busy && i === lastIndex ? "…" : ""))}
+                streaming={busy && i === lastIndex && item.role === "assistant"}
+                images={item.images}
+                files={item.files}
+              />
+            );
+          }
+          if (item.kind === "thinking") {
+            return <ThinkingBlock key={`th${i}`} item={item} streaming={busy && i === lastIndex} />;
+          }
+          if (item.kind === "write") {
+            return <WriteBlock key={item.id + i} item={item} />;
+          }
+          return <ToolRow key={item.id + i} item={item} />;
+        })}
         {pendingAsk && (
           <AskUserMessage
             ask={pendingAsk}
@@ -1032,7 +1109,17 @@ export function App() {
               {pendingFiles.map((file, i) => (
                 <div key={`file${i}`} className="attach-pill" title={file.path ?? file.name}>
                   <Icon name={file.kind === "dir" ? "folder" : "file"} size={12} />
-                  <span>{file.path ?? file.name}</span>
+                  {file.path ? (
+                    <button
+                      type="button"
+                      className="attach-pill-link"
+                      onClick={() => post({ type: "openFile", path: file.path! })}
+                    >
+                      {file.path}
+                    </button>
+                  ) : (
+                    <span>{file.name}</span>
+                  )}
                   <button className="attach-remove inline" onClick={() => setPendingFiles((p) => p.filter((_, j) => j !== i))}>
                     <Icon name="x" size={9} />
                   </button>
@@ -1500,17 +1587,121 @@ function WriteBlock({ item }: { item: Extract<UiItem, { kind: "write" }> }) {
 
 function ToolRow({ item }: { item: Extract<UiItem, { kind: "tool" }> }) {
   const [open, setOpen] = useState(false);
+  const pathLike = /^(read_file|edit_file|list_dir|write_file)$/.test(item.name) && item.argsSummary;
   return (
     <div className={`tool-row-wrap ${item.status}`}>
       <button className="tool-row" onClick={() => item.output && setOpen((o) => !o)} title={item.argsSummary}>
         <Icon name={toolIcon(item.name)} size={13} />
-        <span className="tool-name">{item.name}</span>
-        <span className="tool-args">{item.argsSummary}</span>
+        <span className="tool-label">{toolVerb(item.name)}</span>
+        {pathLike ? (
+          <span
+            className="tool-path file-link"
+            onClick={(e) => {
+              e.stopPropagation();
+              post({ type: "openFile", path: item.argsSummary });
+            }}
+          >
+            {item.argsSummary}
+          </span>
+        ) : (
+          <span className="tool-args">{item.argsSummary}</span>
+        )}
         <span className={`tool-status ${item.status}`}>
           {item.status === "running" ? <Icon name="spinner" size={12} spin /> : item.status === "ok" ? <Icon name="check" size={12} /> : <Icon name="x" size={12} />}
         </span>
       </button>
       {open && item.output && <pre className="tool-output">{item.output}</pre>}
+    </div>
+  );
+}
+
+function toolVerb(name: string): string {
+  switch (name) {
+    case "read_file": return "Read";
+    case "edit_file": return "Edited";
+    case "write_file": return "Wrote";
+    case "list_dir": return "Listed";
+    case "search": return "Searched";
+    case "codebase_search": return "Searched";
+    case "run_command": return "Ran";
+    case "web_search": return "Web";
+    case "read_url": return "Fetched";
+    case "get_diagnostics": return "Diagnostics";
+    default: return name.replace(/^mcp_/, "").replace(/_/g, " ");
+  }
+}
+
+/**
+ * Cursor-style collapsible explore block: one summary line, expand for paths.
+ */
+function ExploreGroup({ tools, streaming }: { tools: ToolItem[]; streaming: boolean }) {
+  const allDone = tools.every((t) => t.status !== "running");
+  const [open, setOpen] = useState(!allDone);
+  const running = tools.find((t) => t.status === "running");
+  const failed = tools.some((t) => t.status === "error" || t.status === "declined");
+
+  // Auto-collapse when the group finishes (Cursor-like).
+  useEffect(() => {
+    if (allDone && !streaming) setOpen(false);
+  }, [allDone, streaming]);
+
+  const paths = tools
+    .map((t) => t.argsSummary.trim())
+    .filter(Boolean);
+  const unique = [...new Set(paths)];
+  const reads = tools.filter((t) => t.name === "read_file").length;
+  const lists = tools.filter((t) => t.name === "list_dir").length;
+  const searches = tools.filter((t) => t.name === "search" || t.name === "codebase_search" || t.name === "web_search").length;
+
+  let summary = "Explored";
+  if (reads && !lists && !searches) summary = reads === 1 ? "Read" : `Read ${reads} files`;
+  else if (lists && !reads && !searches) summary = lists === 1 ? "Listed" : `Listed ${lists} folders`;
+  else if (searches && !reads && !lists) summary = searches === 1 ? "Searched" : `Searched ${searches}×`;
+  else summary = `Explored ${unique.length || tools.length} path${(unique.length || tools.length) === 1 ? "" : "s"}`;
+
+  return (
+    <div className={`explore-group${failed ? " failed" : ""}`}>
+      <button type="button" className="explore-summary" onClick={() => setOpen((o) => !o)}>
+        <span className={`explore-chevron${open ? " open" : ""}`}>
+          <Icon name="chevron" size={10} />
+        </span>
+        {running ? <Icon name="spinner" size={12} spin /> : <Icon name="folder" size={12} />}
+        <span className="explore-summary-text">
+          {running ? toolVerb(running.name) : summary}
+          {running && running.argsSummary ? (
+            <span className="explore-summary-path"> {running.argsSummary}</span>
+          ) : (
+            !running && unique.length > 0 && unique.length <= 3 && (
+              <span className="explore-summary-path"> {unique.map((p) => p.split("/").pop()).join(", ")}</span>
+            )
+          )}
+        </span>
+        {!running && <span className="explore-count">{tools.length}</span>}
+      </button>
+      {open && (
+        <div className="explore-details">
+          {tools.map((t) => {
+            const path = t.argsSummary.trim();
+            const clickable = path && /^(read_file|list_dir)$/.test(t.name);
+            return (
+              <div key={t.id} className={`explore-item ${t.status}`}>
+                <Icon name={toolIcon(t.name)} size={11} />
+                <span className="explore-verb">{toolVerb(t.name)}</span>
+                {clickable ? (
+                  <button type="button" className="file-link explore-path" onClick={() => post({ type: "openFile", path })}>
+                    {path}
+                  </button>
+                ) : (
+                  <span className="explore-path muted">{path || t.name}</span>
+                )}
+                <span className={`tool-status ${t.status}`}>
+                  {t.status === "running" ? <Icon name="spinner" size={10} spin /> : t.status === "ok" ? null : <Icon name="x" size={10} />}
+                </span>
+              </div>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }

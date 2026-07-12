@@ -466,6 +466,39 @@
           "default": true,
           "description": "Show the host IDE Chat next to Wright. Off only hides it while Wright is installed; disabling/uninstalling Wright restores built-in chat."
         },
+        "wright.rules.alwaysAskFollowUps": {
+          "type": "boolean",
+          "default": false,
+          "description": "When a request is ambiguous, ask clarifying questions before making substantial changes."
+        },
+        "wright.rules.requireDeleteApproval": {
+          "type": "boolean",
+          "default": true,
+          "description": "Always ask before running delete commands (rm, rmdir, etc.), even in auto modes."
+        },
+        "wright.rules.noDriveByRefactors": {
+          "type": "boolean",
+          "default": true,
+          "description": "Only change what was asked — no unrelated cleanup or style rewrites."
+        },
+        "wright.rules.explainBeforeEdits": {
+          "type": "boolean",
+          "default": false,
+          "description": "Briefly state the plan before editing or creating files."
+        },
+        "wright.rules.items": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "markdownDescription": "Short custom rules the agent must follow on every turn. Prefer Wright Settings → Rules to edit these."
+        },
+        "wright.rules.custom": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Freeform standing instructions for the agent. Combined with project `.wrightrules` / `.cursorrules` when present."
+        },
         "wright.mcp.servers": {
           "type": "object",
           "default": {},

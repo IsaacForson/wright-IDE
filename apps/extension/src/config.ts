@@ -23,6 +23,10 @@ export interface WrightConfig {
   defaultMode: "agent" | "plan" | "debug" | "ask" | "multi";
   /** Automatically keep all agent edits after each turn. */
   autoKeep: boolean;
+  /** User rules from Settings → Rules (composed text for the system prompt). */
+  userRules?: string;
+  /** Always ask before delete-like shell commands. */
+  requireDeleteApproval: boolean;
 }
 
 export const DEFAULT_MODEL_LIST = [
@@ -72,7 +76,40 @@ export function getConfig(): WrightConfig {
     modelList: cfg.get<string[]>("models.list")?.filter(Boolean) ?? DEFAULT_MODEL_LIST,
     defaultMode: (cfg.get<string>("defaultMode") as WrightConfig["defaultMode"]) || "agent",
     autoKeep: cfg.get<boolean>("edits.autoKeep") ?? false,
+    userRules: composeUserRules(cfg),
+    requireDeleteApproval: cfg.get<boolean>("rules.requireDeleteApproval") ?? true,
   };
+}
+
+/** Build the Settings → Rules block injected into the agent system prompt. */
+export function composeUserRules(cfg = vscode.workspace.getConfiguration("wright")): string | undefined {
+  const parts: string[] = [];
+  if (cfg.get<boolean>("rules.alwaysAskFollowUps")) {
+    parts.push(
+      "- Always ask clarifying follow-up questions via the ask_user tool when the request is ambiguous, incomplete, or missing a decision that would change the work — before making substantial changes.",
+    );
+  }
+  if (cfg.get<boolean>("rules.requireDeleteApproval") ?? true) {
+    parts.push(
+      "- Never delete files, folders, or wipe data without explicit user confirmation in this conversation. Prefer asking first; do not run destructive rm/rmdir/del commands on your own initiative.",
+    );
+  }
+  if (cfg.get<boolean>("rules.noDriveByRefactors") ?? true) {
+    parts.push(
+      "- Only change what was asked. Do not refactor, rename, or “clean up” unrelated code, formatting, or files.",
+    );
+  }
+  if (cfg.get<boolean>("rules.explainBeforeEdits")) {
+    parts.push("- Before editing or creating files, briefly state what you plan to change and why (one or two sentences).");
+  }
+  for (const item of cfg.get<string[]>("rules.items") ?? []) {
+    const t = item.trim().replace(/^[-*•]\s*/, "");
+    if (t) parts.push(`- ${t}`);
+  }
+  const custom = cfg.get<string>("rules.custom")?.trim();
+  if (custom) parts.push(custom);
+  if (parts.length === 0) return undefined;
+  return parts.join("\n").slice(0, 12_000);
 }
 
 function readWorkspaceDotEnv(key: string): string | undefined {
