@@ -20,8 +20,7 @@ update_app() {
   rm -rf "$DEST"
   mkdir -p "$DEST"
   cp -R apps/extension/package.json apps/extension/dist apps/extension/media "$DEST/"
-  # Wright is the only AI assistant in this IDE — keep Copilot out.
-  rm -rf "$APP/Contents/Resources/app/extensions/copilot"
+  # Do not strip Copilot — Wright lives as a Chat panel tab beside the host chat.
   node "$ROOT/build/ide/patch-app-strings.mjs" "$APP"
   codesign --force --deep --sign - "$APP"
 }

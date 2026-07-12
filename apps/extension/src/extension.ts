@@ -33,14 +33,14 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.languages.registerInlineCompletionItemProvider({ pattern: "**" }, new WrightCompletionProvider()),
   );
 
-  // Open the Wright panel (secondary sidebar) on startup, then hand focus back
-  // to the editor so it behaves like a persistent chat, not a focus grab.
+  // Wright lives in the secondary (right) sidebar — open it there on startup.
   void (async () => {
     try {
+      await vscode.commands.executeCommand("workbench.action.focusAuxiliaryBar");
       await vscode.commands.executeCommand("wright.chat.focus");
       await vscode.commands.executeCommand("workbench.action.focusActiveEditorGroup");
     } catch {
-      // View not ready yet (e.g. first-run layout restore) — harmless.
+      // Layout not ready yet — harmless.
     }
   })();
 }

@@ -10,7 +10,7 @@ import { DEFAULT_MODEL_LIST } from "./config.js";
 type FieldKind = "toggle" | "select" | "text" | "password" | "number" | "stringlist" | "json";
 
 interface Field {
-  key: string; // configuration key relative to "wright."
+  key: string; // configuration key relative to configSection (default "wright")
   label: string;
   desc: string;
   kind: FieldKind;
@@ -18,6 +18,10 @@ interface Field {
   placeholder?: string;
   /** select options come from the current models.list value */
   optionsFromModelList?: boolean;
+  /** VS Code config section (default "wright") */
+  configSection?: string;
+  /** For toggles: UI on means the stored boolean is false (e.g. chat.disableAIFeatures) */
+  invert?: boolean;
 }
 
 interface Section {
@@ -46,6 +50,14 @@ const SECTIONS: Section[] = [
       {
         key: "edits.autoKeep", label: "Auto-keep Edits", kind: "toggle",
         desc: "Automatically keep all agent edits after each turn (skip the manual Keep all)",
+      },
+      {
+        key: "disableAIFeatures",
+        configSection: "chat",
+        invert: true,
+        label: "Built-in IDE Chat",
+        kind: "toggle",
+        desc: "Show the host Chat icon in the right sidebar next to Wright. Off hides built-in chat (Wright stays on the right)",
       },
     ],
   },
@@ -144,7 +156,8 @@ const SECTIONS: Section[] = [
   },
 ];
 
-const ALL_KEYS = SECTIONS.flatMap((s) => s.fields.map((f) => f.key));
+const ALL_FIELDS = SECTIONS.flatMap((s) => s.fields);
+const FIELD_BY_KEY = new Map(ALL_FIELDS.map((f) => [f.key, f]));
 
 export class WrightSettingsPanel {
   private static current: WrightSettingsPanel | undefined;
@@ -176,24 +189,64 @@ export class WrightSettingsPanel {
         if (msg.type === "openVSCodeSettings") void vscode.commands.executeCommand("workbench.action.openSettings", "wright");
       }),
       vscode.workspace.onDidChangeConfiguration((e) => {
-        if (e.affectsConfiguration("wright")) this.postValues();
+        if (e.affectsConfiguration("wright") || e.affectsConfiguration("chat.disableAIFeatures")) {
+          this.postValues();
+        }
       }),
     );
     this.panel.onDidDispose(() => this.dispose(), null, this.disposables);
   }
 
   private async set(key: string, value: unknown): Promise<void> {
+    const field = FIELD_BY_KEY.get(key);
+    const section = field?.configSection ?? "wright";
+    let stored = value;
+    if (field?.invert && typeof value === "boolean") stored = !value;
     try {
-      await vscode.workspace.getConfiguration("wright").update(key, value, vscode.ConfigurationTarget.Global);
+      await vscode.workspace.getConfiguration(section).update(key, stored, vscode.ConfigurationTarget.Global);
+      if (section === "chat" && key === "disableAIFeatures") {
+        const enabling = stored === false;
+        if (enabling) {
+          // Make sure the right sidebar is visible and open the host Chat view.
+          try {
+            await vscode.commands.executeCommand("workbench.action.focusAuxiliaryBar");
+            await vscode.commands.executeCommand("workbench.action.chat.open");
+          } catch {
+            try {
+              await vscode.commands.executeCommand("workbench.panel.chat.view.copilot.focus");
+            } catch {
+              /* host chat command names vary by IDE */
+            }
+          }
+        }
+        const choice = await vscode.window.showInformationMessage(
+          enabling
+            ? "Built-in IDE chat enabled — it should appear as a Chat icon on the right, next to Wright. Reload if you still don't see it."
+            : "Built-in IDE chat hidden. Wright stays on the right. Reload if the Chat icon is still visible.",
+          "Reload Window",
+          "Reset View Layout",
+        );
+        if (choice === "Reload Window") {
+          await vscode.commands.executeCommand("workbench.action.reloadWindow");
+        } else if (choice === "Reset View Layout") {
+          await vscode.commands.executeCommand("workbench.action.resetViewLocations");
+          await vscode.commands.executeCommand("workbench.action.focusAuxiliaryBar");
+          await vscode.commands.executeCommand("wright.chat.focus");
+        }
+      }
     } catch (err) {
       void vscode.window.showErrorMessage(`Wright: failed to save ${key}: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 
   private postValues(): void {
-    const cfg = vscode.workspace.getConfiguration("wright");
     const values: Record<string, unknown> = {};
-    for (const key of ALL_KEYS) values[key] = cfg.get(key);
+    for (const field of ALL_FIELDS) {
+      const section = field.configSection ?? "wright";
+      let v = vscode.workspace.getConfiguration(section).get(field.key);
+      if (field.invert && typeof v === "boolean") v = !v;
+      values[field.key] = v;
+    }
     if (!Array.isArray(values["models.list"]) || (values["models.list"] as string[]).length === 0) {
       values["models.list"] = DEFAULT_MODEL_LIST;
     }
