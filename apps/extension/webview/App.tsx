@@ -95,7 +95,7 @@ const RESEARCH_OPTIONS: SelectOption[] = [
 function modelLabel(id: string): string {
   if (id === "auto") return "Auto";
   if (id.startsWith("ollama:")) return id.slice(7).replace(/:latest$/, "");
-  const known = ["openrouter", "groq", "gemini", "cerebras", "huggingface", "github", "mistral"];
+  const known = ["openrouter", "deepseek", "groq", "gemini", "cerebras", "mistral"];
   for (const p of known) {
     if (id.startsWith(p + ":")) {
       const rest = id.slice(p.length + 1);
@@ -108,13 +108,12 @@ function modelLabel(id: string): string {
 function modelHint(id: string): string | undefined {
   if (id === "auto") return MODEL_HINTS.auto;
   if (id.startsWith("ollama:")) return "local · free";
-  if (id.startsWith("openrouter:")) return "openrouter · free tier";
-  if (id.startsWith("groq:")) return "groq · fast";
-  if (id.startsWith("gemini:")) return "gemini · free tier";
+  if (id.startsWith("openrouter:")) return "openrouter · free coding";
+  if (id.startsWith("deepseek:")) return "deepseek · coding";
+  if (id.startsWith("groq:")) return "groq · fast coding";
+  if (id.startsWith("gemini:")) return "gemini · reasoning";
   if (id.startsWith("cerebras:")) return "cerebras · fastest";
-  if (id.startsWith("huggingface:")) return "huggingface · router";
-  if (id.startsWith("github:")) return "github · free";
-  if (id.startsWith("mistral:")) return "mistral";
+  if (id.startsWith("mistral:")) return "mistral · codestral";
   return MODEL_HINTS[id];
 }
 
@@ -123,11 +122,10 @@ function modelIcon(id: string): string | undefined {
   if (id.startsWith("ollama:")) return "terminal";
   if (
     id.startsWith("openrouter:") ||
+    id.startsWith("deepseek:") ||
     id.startsWith("groq:") ||
     id.startsWith("gemini:") ||
     id.startsWith("cerebras:") ||
-    id.startsWith("huggingface:") ||
-    id.startsWith("github:") ||
     id.startsWith("mistral:")
   ) {
     return "cloud";
