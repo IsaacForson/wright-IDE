@@ -182,7 +182,11 @@ export class ModelClient {
           }
         } else {
           if (tc.id) existing.id = tc.id;
-          if (tc.function?.name) existing.function.name += tc.function.name;
+          if (tc.function?.name) {
+            // Never blindly append name fragments — Mistral (and some gateways)
+            // re-send or emit junk on later deltas, producing "list_dirнодорож".
+            existing.function.name = mergeStreamedToolName(existing.function.name, tc.function.name);
+          }
           if (tc.function?.arguments) {
             existing.function.arguments += tc.function.arguments;
             yield { type: "tool_call_delta", index: tc.index, id: existing.id, name: existing.function.name, text: tc.function.arguments };
@@ -312,6 +316,20 @@ export class ModelClient {
     }
     throw lastErr;
   }
+}
+
+/**
+ * Merge streamed tool-name deltas without concatenating unrelated junk.
+ * Progressive completion (`li` → `list_dir`) is kept; duplicate/shorter
+ * resends and garbage fragments are ignored.
+ */
+export function mergeStreamedToolName(current: string, incoming: string): string {
+  if (!incoming) return current;
+  if (!current) return incoming;
+  if (incoming === current) return current;
+  if (incoming.startsWith(current)) return incoming;
+  if (current.startsWith(incoming)) return current;
+  return current;
 }
 
 /**

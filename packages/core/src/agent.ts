@@ -152,6 +152,11 @@ export class Agent {
 
       for (const call of toolCalls) {
         if (runOpts.signal?.aborted) throw new ModelError("aborted", "Agent run cancelled");
+        // Models (esp. Mistral) sometimes emit "list_dirнодорож" — map to a known tool.
+        const resolved = resolveToolName(call.function.name, this.tools.keys());
+        if (resolved && resolved !== call.function.name) {
+          call.function.name = resolved;
+        }
         const rawArgs = call.function.arguments;
         const args = parseArgs(rawArgs);
         // Providers re-validate prior tool_call JSON on the next turn. Repair
@@ -236,6 +241,32 @@ export class Agent {
 }
 
 type ParsedArgs = { ok: true; value: Record<string, unknown> } | { ok: false; error: string };
+
+/**
+ * Map a model-emitted tool name onto a registered tool when the model glued
+ * junk onto a valid name (e.g. "list_dirнодорож" → "list_dir").
+ */
+export function resolveToolName(raw: string, known: Iterable<string>): string | undefined {
+  const name = raw.trim();
+  if (!name) return undefined;
+  const tools = known instanceof Set ? known : new Set(known);
+  if (tools.has(name)) return name;
+
+  // Leading snake_case token — stops at Cyrillic/punctuation/spaces.
+  const ascii = name.match(/^[a-z][a-z0-9_]*/i)?.[0];
+  if (ascii && tools.has(ascii)) return ascii;
+
+  let best: string | undefined;
+  for (const k of tools) {
+    if (!name.startsWith(k)) continue;
+    const rest = name.slice(k.length);
+    // Remainder must not look like more of a snake_case name (avoids
+    // mapping "list_dir_foo" → "list_dir" when both could exist).
+    if (rest && /^[a-z0-9_]/i.test(rest)) continue;
+    if (!best || k.length > best.length) best = k;
+  }
+  return best;
+}
 
 /**
  * Parse tool-call argument JSON. Models often append a second object, trailing
