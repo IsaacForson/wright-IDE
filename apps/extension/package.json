@@ -176,7 +176,7 @@
         "wright.fallback.ollama": {
           "type": "boolean",
           "default": true,
-          "description": "When every NVIDIA key is rate-limited, fall back to your local Ollama (free forever, no limits)."
+          "description": "When every cloud provider is rate-limited or unavailable, fall back to your local Ollama (free forever, no limits)."
         },
         "wright.fallback.ollamaModel": {
           "type": "string",
@@ -208,7 +208,127 @@
               "model"
             ]
           },
-          "markdownDescription": "Extra OpenAI-compatible fallback providers, tried in order after NVIDIA (before Ollama). Examples \u2014 Groq: `{\"name\":\"groq\",\"baseUrl\":\"https://api.groq.com/openai/v1\",\"apiKey\":\"gsk_\u2026\",\"model\":\"llama-3.3-70b-versatile\"}` \u00b7 Gemini free tier: `{\"name\":\"gemini\",\"baseUrl\":\"https://generativelanguage.googleapis.com/v1beta/openai\",\"apiKey\":\"AIza\u2026\",\"model\":\"gemini-2.0-flash\"}` \u00b7 Cerebras: `{\"name\":\"cerebras\",\"baseUrl\":\"https://api.cerebras.ai/v1\",\"apiKey\":\"csk-\u2026\",\"model\":\"llama-3.3-70b\"}`"
+          "markdownDescription": "Custom OpenAI-compatible providers appended to the failover chain (after first-class providers, before Ollama). Prefer Wright Settings → Providers for OpenRouter, Groq, Gemini, etc."
+        },
+        "wright.providers.openrouter.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Include OpenRouter in the chat picker and failover chain when an API key is set."
+        },
+        "wright.providers.openrouter.apiKey": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "OpenRouter API key from [openrouter.ai](https://openrouter.ai). Models appear as `openrouter:…` in the picker."
+        },
+        "wright.providers.openrouter.models": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": [
+            "deepseek/deepseek-chat-v3-0324:free",
+            "meta-llama/llama-3.3-70b-instruct:free",
+            "qwen/qwen3-32b:free"
+          ],
+          "description": "OpenRouter model ids shown in the picker (editable; free tiers change over time)."
+        },
+        "wright.providers.groq.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Include Groq in the chat picker and failover chain when an API key is set."
+        },
+        "wright.providers.groq.apiKey": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Groq API key from [console.groq.com](https://console.groq.com)."
+        },
+        "wright.providers.groq.models": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": ["llama-3.3-70b-versatile", "qwen/qwen3-32b", "openai/gpt-oss-120b"],
+          "description": "Groq model ids shown in the picker."
+        },
+        "wright.providers.gemini.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Include Google Gemini in the chat picker and failover chain when an API key is set."
+        },
+        "wright.providers.gemini.apiKey": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Gemini API key from [aistudio.google.com](https://aistudio.google.com)."
+        },
+        "wright.providers.gemini.models": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": ["gemini-2.0-flash", "gemini-2.5-flash"],
+          "description": "Gemini model ids shown in the picker."
+        },
+        "wright.providers.cerebras.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Include Cerebras in the chat picker and failover chain when an API key is set."
+        },
+        "wright.providers.cerebras.apiKey": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Cerebras API key from [cloud.cerebras.ai](https://cloud.cerebras.ai)."
+        },
+        "wright.providers.cerebras.models": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": ["llama-3.3-70b", "qwen-3-32b"],
+          "description": "Cerebras model ids shown in the picker."
+        },
+        "wright.providers.huggingface.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Include Hugging Face Inference Providers in the chat picker and failover chain when a token is set."
+        },
+        "wright.providers.huggingface.apiKey": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Hugging Face token from [huggingface.co/settings/tokens](https://huggingface.co/settings/tokens)."
+        },
+        "wright.providers.huggingface.models": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": [
+            "meta-llama/Llama-3.3-70B-Instruct",
+            "Qwen/Qwen2.5-72B-Instruct",
+            "deepseek-ai/DeepSeek-V3"
+          ],
+          "description": "Hugging Face router model ids shown in the picker."
+        },
+        "wright.providers.github.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Include GitHub Models in the chat picker and failover chain when a token is set."
+        },
+        "wright.providers.github.apiKey": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "GitHub personal access token with models access — [GitHub Models](https://github.com/marketplace/models)."
+        },
+        "wright.providers.github.models": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": ["gpt-4o-mini", "gpt-4o", "Phi-4"],
+          "description": "GitHub Models ids shown in the picker."
+        },
+        "wright.providers.mistral.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Include Mistral in the chat picker and failover chain when an API key is set."
+        },
+        "wright.providers.mistral.apiKey": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Mistral API key from [console.mistral.ai](https://console.mistral.ai)."
+        },
+        "wright.providers.mistral.models": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": ["mistral-small-latest", "mistral-medium-latest"],
+          "description": "Mistral model ids shown in the picker."
         },
         "wright.model.chat": {
           "type": "string",

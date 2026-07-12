@@ -95,10 +95,47 @@ const RESEARCH_OPTIONS: SelectOption[] = [
 function modelLabel(id: string): string {
   if (id === "auto") return "Auto";
   if (id.startsWith("ollama:")) return id.slice(7).replace(/:latest$/, "");
+  const known = ["openrouter", "groq", "gemini", "cerebras", "huggingface", "github", "mistral"];
+  for (const p of known) {
+    if (id.startsWith(p + ":")) {
+      const rest = id.slice(p.length + 1);
+      return rest.split("/").pop() ?? rest;
+    }
+  }
   return id.split("/").pop() ?? id;
 }
 
-/** What each model is best at — shown as the hint in the picker. */
+function modelHint(id: string): string | undefined {
+  if (id === "auto") return MODEL_HINTS.auto;
+  if (id.startsWith("ollama:")) return "local · free";
+  if (id.startsWith("openrouter:")) return "openrouter · free tier";
+  if (id.startsWith("groq:")) return "groq · fast";
+  if (id.startsWith("gemini:")) return "gemini · free tier";
+  if (id.startsWith("cerebras:")) return "cerebras · fastest";
+  if (id.startsWith("huggingface:")) return "huggingface · router";
+  if (id.startsWith("github:")) return "github · free";
+  if (id.startsWith("mistral:")) return "mistral";
+  return MODEL_HINTS[id];
+}
+
+function modelIcon(id: string): string | undefined {
+  if (id === "auto") return "sparkle";
+  if (id.startsWith("ollama:")) return "terminal";
+  if (
+    id.startsWith("openrouter:") ||
+    id.startsWith("groq:") ||
+    id.startsWith("gemini:") ||
+    id.startsWith("cerebras:") ||
+    id.startsWith("huggingface:") ||
+    id.startsWith("github:") ||
+    id.startsWith("mistral:")
+  ) {
+    return "cloud";
+  }
+  return undefined;
+}
+
+/** What each NVIDIA model is best at — shown as the hint in the picker. */
 const MODEL_HINTS: Record<string, string> = {
   auto: "routes per task",
   "z-ai/glm-5.2": "coding + UI design · fast",
@@ -786,8 +823,8 @@ export function App() {
                 ...models.map((m) => ({
                   value: m,
                   label: modelLabel(m),
-                  icon: m === "auto" ? "sparkle" : m.startsWith("ollama:") ? "terminal" : undefined,
-                  hint: m.startsWith("ollama:") ? "local · free" : MODEL_HINTS[m],
+                  icon: modelIcon(m),
+                  hint: modelHint(m),
                 })),
                 { value: "__manage__", label: "Manage cloud models…", icon: "gear" },
                 { value: "__local__", label: "Local models…", icon: "plus", hint: "download & use" },

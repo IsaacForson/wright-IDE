@@ -236,7 +236,10 @@ export class ModelClient {
         : [undefined];
 
     const doFetch = (key: string | undefined, noRateLimitRetry: boolean) => {
-      const headers: Record<string, string> = { "Content-Type": "application/json" };
+      const headers: Record<string, string> = {
+        "Content-Type": "application/json",
+        ...this.provider.defaultHeaders,
+      };
       if (key) headers["Authorization"] = `Bearer ${key}`;
       return withRetry(
         async () => {

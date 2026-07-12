@@ -1,6 +1,7 @@
 import * as vscode from "vscode";
-import { ModelClient, ModelError, nvidiaProvider } from "@wright/core";
+import { ModelError } from "@wright/core";
 import { getConfig } from "./config.js";
+import { buildFailoverClient, hasAnyCloudCredential } from "./providers.js";
 
 /** Virtual docs serving proposed inline-edit results for the diff review. */
 export const PROPOSED_SCHEME = "wright-proposed";
@@ -13,10 +14,9 @@ export const proposedContentProvider: vscode.TextDocumentContentProvider = {
 
 /**
  * Inline edit (Phase 6, Cmd+K style): select code, describe a change, get
- * it rewritten in place. Single-shot, low latency — routed to the FAST
- * model, never the agent loop. With no selection, generates at the cursor.
- * The edit lands in the buffer (not on disk): review it in place, undo
- * (Cmd+Z) to reject, save to accept.
+ * it rewritten in place. Single-shot, low latency — routed through the
+ * multi-provider failover chain (defaults to NVIDIA fast model).
+ * With no selection, generates at the cursor.
  */
 
 const SYSTEM = `You are a precise code editing engine inside an editor.
@@ -32,8 +32,8 @@ export async function inlineEdit(): Promise<void> {
     return;
   }
   const config = getConfig();
-  if (!config.apiKey) {
-    vscode.window.showWarningMessage("Wright: no NVIDIA API key configured.");
+  if (!hasAnyCloudCredential()) {
+    vscode.window.showWarningMessage("Wright: no API key configured. Add one in Wright Settings → Providers.");
     return;
   }
 
@@ -47,7 +47,6 @@ export async function inlineEdit(): Promise<void> {
   });
   if (!instruction?.trim()) return;
 
-  // The region we replace: the selection, or the cursor position for inserts.
   const range = hasSelection
     ? new vscode.Range(selection.start, selection.end)
     : new vscode.Range(selection.active, selection.active);
@@ -74,9 +73,7 @@ export async function inlineEdit(): Promise<void> {
     `Instruction: ${instruction}`,
   ].join("\n");
 
-  const client = new ModelClient(
-    nvidiaProvider({ apiKeys: config.apiKeys, chatModel: config.fastModel }),
-  );
+  const { client, agentModel } = await buildFailoverClient(config.fastModel);
 
   const result = await vscode.window.withProgress(
     { location: vscode.ProgressLocation.Notification, title: "Wright: editing…", cancellable: true },
@@ -86,7 +83,7 @@ export async function inlineEdit(): Promise<void> {
       try {
         return await client.complete(
           {
-            model: config.fastModel,
+            model: agentModel,
             messages: [
               { role: "system", content: SYSTEM },
               { role: "user", content: user },
@@ -116,7 +113,6 @@ export async function inlineEdit(): Promise<void> {
     return;
   }
 
-  // Review as a real diff: current file vs proposed, then Apply/Discard.
   const fullBefore = doc.getText(new vscode.Range(new vscode.Position(0, 0), range.start));
   const fullAfter = doc.getText(new vscode.Range(range.end, doc.lineAt(doc.lineCount - 1).range.end));
   const proposed = fullBefore + code + fullAfter;
@@ -136,7 +132,6 @@ export async function inlineEdit(): Promise<void> {
     "Apply",
     "Discard",
   );
-  // Close the diff preview either way.
   await vscode.commands.executeCommand("workbench.action.closeActiveEditor").then(undefined, () => {});
   proposedDocs.delete(key);
 

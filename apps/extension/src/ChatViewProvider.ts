@@ -2,10 +2,7 @@ import * as vscode from "vscode";
 import {
   Agent,
   ApprovalPolicy,
-  FailoverModelClient,
   ModelClient,
-  openAICompatibleProvider,
-  type FailoverTarget,
   ModelError,
   TrackedHost,
   agentSystemPrompt,
@@ -25,7 +22,8 @@ import { IndexService } from "./IndexService.js";
 import { createDiagnosticsTool } from "./diagnosticsTool.js";
 import { TerminalHost } from "./terminalHost.js";
 import { DEFAULT_MODEL_LIST, getConfig } from "./config.js";
-import { RECOMMENDED_LOCAL_MODELS, deleteModel, ensureOllamaRunning, listLocalModels, offerOllamaInstall, ollamaOpenAiBase, pullModel } from "./ollama.js";
+import { RECOMMENDED_LOCAL_MODELS, deleteModel, ensureOllamaRunning, listLocalModels, offerOllamaInstall, pullModel } from "./ollama.js";
+import { buildFailoverClient, buildPickerModels, hasAnyCloudCredential } from "./providers.js";
 import { getActiveFile, workspaceRoot } from "./workspace.js";
 import * as os from "node:os";
 import type { ChatMode, FileAttachment, HostToWebview, ResearchMode, UiItem, WebviewToHost } from "./protocol.js";
@@ -184,6 +182,15 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     };
     view.webview.html = this.html(view.webview);
     view.webview.onDidReceiveMessage((msg: WebviewToHost) => this.onMessage(msg));
+    const configSub = vscode.workspace.onDidChangeConfiguration((e) => {
+      if (e.affectsConfiguration("wright")) {
+        this.approvalMode = getConfig().approvalMode;
+        this.agent = undefined;
+        this.agentBuiltFor = undefined;
+        this.sendState(this.abort !== undefined);
+      }
+    });
+    view.onDidDispose(() => configSub.dispose());
   }
 
   /** Editor context menu: attach the selection to the composer as reference. */
@@ -265,7 +272,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
   private sendState(busy: boolean): void {
     const config = getConfig();
-    const models = ["auto", ...config.modelList, ...this.localModels.map((m) => `ollama:${m}`)];
+    const models = buildPickerModels(config.modelList, this.localModels);
     if (!models.includes(this.model)) models.splice(1, 0, this.model);
     this.post({
       type: "state",
@@ -548,7 +555,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       vscode.window.showInformationMessage("Wright: open the file you want to apply the code to first.");
       return;
     }
-    if (!config.apiKey) return;
+    if (!hasAnyCloudCredential()) return;
     if (info.content.length > 48_000) {
       vscode.window.showWarningMessage("Wright: file too large for Apply — ask the agent to edit it instead.");
       return;
@@ -558,9 +565,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     await vscode.window.withProgress(
       { location: vscode.ProgressLocation.Notification, title: `Wright: applying to ${info.path}…` },
       async () => {
-        const client = new ModelClient(nvidiaProvider({ apiKeys: config.apiKeys, chatModel: config.fastModel }));
+        const { client, agentModel } = await buildFailoverClient(
+          this.model === "auto" || this.model.startsWith("ollama:") ? config.fastModel : this.model,
+        );
         const result = await client.complete({
-          model: config.fastModel,
+          model: agentModel,
           messages: [
             {
               role: "system",
@@ -599,14 +608,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     if (words > 120) return true;
     if (!bigSignals.test(text)) return false;
     const config = getConfig();
-    if (!config.apiKey) return false;
+    if (!hasAnyCloudCredential()) return false;
     try {
-      const client = new ModelClient(nvidiaProvider({ apiKeys: config.apiKeys, chatModel: config.fastModel }));
+      const { client, agentModel } = await buildFailoverClient(config.fastModel);
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), 4_000);
       const result = await client.complete(
         {
-          model: config.fastModel,
+          model: agentModel,
           messages: [
             {
               role: "system",
@@ -729,63 +738,29 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this.post({ type: "fileList", token, entries: scored });
   }
 
-  private async buildAgent(apiKey: string, model: string, mode: AgentMode, research: ResearchMode): Promise<Agent> {
+  private async buildAgent(_apiKey: string, model: string, mode: AgentMode, research: ResearchMode): Promise<Agent> {
     const root = workspaceRoot();
     // No folder open? Root the agent at the home directory so it can still
     // read the filesystem and scaffold brand-new projects anywhere under ~.
     this.rootPath = root?.fsPath ?? os.homedir();
     const config = getConfig();
-    const wcfg = vscode.workspace.getConfiguration("wright");
-    const targets: FailoverTarget[] = [];
-    let agentModel = model;
-    if (model.startsWith("ollama:")) {
-      // User explicitly picked a local model: it's the primary; NVIDIA backs it up.
-      agentModel = model.slice("ollama:".length);
-      if (!(await ensureOllamaRunning())) {
-        void offerOllamaInstall();
-        throw new Error("Ollama isn't reachable — install/start it (or fix wright.ollama.url), or pick a cloud model.");
-      }
-      targets.push({
-        name: "ollama (local)",
-        model: agentModel,
-        client: new ModelClient(openAICompatibleProvider({ id: "ollama", name: "Ollama", baseUrl: ollamaOpenAiBase(), chatModel: agentModel })),
-      });
-      targets.push({
-        name: "nvidia",
-        model: config.chatModel,
-        client: new ModelClient(nvidiaProvider({ apiKeys: config.apiKeys, chatModel: config.chatModel, fastModel: config.fastModel })),
-      });
-    } else {
-      // Failover chain: NVIDIA (key pool) → user's extra providers → local Ollama.
-      targets.push({ name: "nvidia", client: new ModelClient(nvidiaProvider({ apiKeys: config.apiKeys, chatModel: model, fastModel: config.fastModel })) });
+
+    let failover;
+    try {
+      failover = await buildFailoverClient(model, { requireOllamaIfPrimary: true });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (msg.includes("Ollama isn't reachable")) void offerOllamaInstall();
+      throw err;
     }
-    if (!model.startsWith("ollama:")) {
-      for (const p of wcfg.get<Array<{ name: string; baseUrl: string; apiKey?: string; model: string }>>("fallback.providers") ?? []) {
-        if (!p?.baseUrl || !p.model) continue;
-        targets.push({
-          name: p.name || p.baseUrl,
-          model: p.model,
-          client: new ModelClient(openAICompatibleProvider({ id: p.name || "custom", name: p.name || "custom", baseUrl: p.baseUrl, apiKey: p.apiKey, chatModel: p.model })),
-        });
-      }
-      if (wcfg.get<boolean>("fallback.ollama") ?? true) {
-        const ollamaModel = wcfg.get<string>("fallback.ollamaModel") || "qwen2.5-coder:14b";
-        targets.push({
-          name: "ollama (local)",
-          model: ollamaModel,
-          client: new ModelClient(openAICompatibleProvider({ id: "ollama", name: "Ollama", baseUrl: ollamaOpenAiBase(), chatModel: ollamaModel })),
-        });
-      }
-    }
-    const client = new FailoverModelClient(targets, (from, to) =>
-      vscode.window.setStatusBarMessage(`Wright: ${from} unavailable → switched to ${to}`, 6_000),
-    );
+    const { client, agentModel } = failover;
+
     this.tracker ??= new TrackedHost(new NodeWorkspaceHost(this.rootPath));
     // Commands run in a visible "Wright" terminal; edits still go through the tracker.
     let tools = createBuiltinTools(new TerminalHost(this.tracker, this.rootPath));
     // Embeddings always ride NVIDIA (local models don't serve our embed model).
     const embedClient = new ModelClient(nvidiaProvider({ apiKeys: config.apiKeys, chatModel: config.chatModel }));
-    const indexer = root ? await this.indexService.ensure(embedClient, root.fsPath) : undefined;
+    const indexer = root && config.apiKeys.length ? await this.indexService.ensure(embedClient, root.fsPath) : undefined;
     if (indexer) tools.push(createCodebaseSearchTool(indexer));
     tools.push(createWebSearchTool(config.webSearch));
     tools.push(createReadUrlTool());
@@ -844,27 +819,43 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   /** Composer: draft (or revise) a plan and hold it for approval. */
   private async handlePlan(task: string, feedback?: string): Promise<void> {
     if (this.abort) return;
-    const config = getConfig();
-    if (!config.apiKey) {
-      this.post({ type: "error", message: "No NVIDIA API key found. Set `wright.nvidia.apiKey` in Settings." });
+    if (!hasAnyCloudCredential() && !this.model.startsWith("ollama:")) {
+      this.post({
+        type: "error",
+        message: "No API key found. Add NVIDIA or a free provider key in Wright Settings → Providers.",
+      });
       return;
     }
     const root = workspaceRoot(); // optional: without one we just plan without codebase context
+    const config = getConfig();
 
     const priorPlan = feedback ? this.pendingPlan?.plan : undefined;
     this.pendingPlan = undefined;
     this.items.push({ kind: "text", role: "user", content: feedback ?? task });
     this.sendState(true);
 
-    const planModel = this.model === "auto" ? config.chatModel : this.model;
-    const client = new ModelClient(nvidiaProvider({ apiKeys: config.apiKeys, chatModel: planModel }));
+    const planModelRef = this.model === "auto" ? config.chatModel : this.model;
+    let client: ModelClient;
+    let planModel: string;
+    try {
+      const failover = await buildFailoverClient(planModelRef);
+      client = failover.client;
+      planModel = failover.agentModel;
+    } catch (err) {
+      this.post({ type: "error", message: err instanceof Error ? err.message : String(err) });
+      this.sendState(false);
+      return;
+    }
     this.abort = new AbortController();
     const planItem: Extract<UiItem, { kind: "text" }> = { kind: "text", role: "assistant", content: "" };
     this.items.push(planItem);
     this.post({ type: "assistantStart" });
 
     try {
-      const indexer = root ? await this.indexService.ensure(client, root.fsPath) : undefined;
+      const embedClient = config.apiKeys.length
+        ? new ModelClient(nvidiaProvider({ apiKeys: config.apiKeys, chatModel: config.chatModel }))
+        : client;
+      const indexer = root && config.apiKeys.length ? await this.indexService.ensure(embedClient, root.fsPath) : undefined;
       const context = indexer ? await planContext(indexer, task, this.abort.signal) : undefined;
       const plan = await generatePlan(
         client,
@@ -902,16 +893,16 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   ): Promise<void> {
     if (this.abort) return; // already running; UI disables send, but guard anyway
 
-    const config = getConfig();
-    if (!config.apiKey) {
+    if (!hasAnyCloudCredential() && !this.model.startsWith("ollama:")) {
       this.post({
         type: "error",
         message:
-          "No NVIDIA API key found. Set `wright.nvidia.apiKey` in Settings (or put NVIDIA_API_KEY in the workspace .env).",
+          "No API key found. Add a NVIDIA key or enable OpenRouter / Groq / Gemini (etc.) in Wright Settings → Providers.",
       });
       return;
     }
 
+    const config = getConfig();
     const mode = opts.mode ?? "agent";
     const research = opts.research ?? "off";
     const resolvedModel = this.resolveModel(mode, (opts.images?.length ?? 0) > 0);
@@ -924,7 +915,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       ) {
         // Carry the conversation across model/mode/research switches.
         if (this.agent) this.savedMessages = [...this.agent.history];
-        this.agent = await this.buildAgent(config.apiKey, resolvedModel, mode, research);
+        this.agent = await this.buildAgent(config.apiKey ?? "", resolvedModel, mode, research);
         this.agentBuiltFor = { model: resolvedModel, mode, research };
       }
     } catch (err) {

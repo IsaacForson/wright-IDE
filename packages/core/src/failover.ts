@@ -70,7 +70,8 @@ export class FailoverModelClient extends ModelClient {
     if (opts.signal?.aborted) return false;
     if (i >= this.targets.length - 1) return false;
     const kind = err instanceof ModelError ? err.kind : undefined;
-    if (kind !== "rate_limit" && kind !== "server" && kind !== "network") return false;
+    // Auth fails over when another provider remains (multi-provider free tiers).
+    if (kind !== "rate_limit" && kind !== "server" && kind !== "network" && kind !== "auth") return false;
     this.onFailover?.(this.targets[i]!.name, this.targets[i + 1]!.name);
     return true;
   }
