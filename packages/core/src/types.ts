@@ -48,6 +48,13 @@ export interface ToolCall {
     /** JSON-encoded arguments, exactly as the model emitted them. */
     arguments: string;
   };
+  /**
+   * Gemini 3+ (OpenAI-compat) thought signature. Must be echoed back on the
+   * same tool_call when continuing a tool loop, or Gemini returns 400.
+   */
+  extra_content?: {
+    google?: { thought_signature?: string };
+  };
 }
 
 /** JSON Schema the model sees for a tool. */

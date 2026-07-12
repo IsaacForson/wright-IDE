@@ -6,8 +6,16 @@ import { WrightCompletionProvider } from "./autocomplete.js";
 import { generateCommitMessage } from "./gitCommit.js";
 import { getConfig } from "./config.js";
 import { WrightSettingsPanel } from "./settingsPanel.js";
+import {
+  applyBuiltinChatVisibility,
+  getShowBuiltinChat,
+  restoreBuiltinChatOnExit,
+} from "./builtinChat.js";
 
 export function activate(context: vscode.ExtensionContext): void {
+  // Sync host Chat visibility from Wright's setting (default: show built-in chat).
+  void applyBuiltinChatVisibility(getShowBuiltinChat());
+
   const indexService = new IndexService(getConfig().embedModel);
   const chatProvider = new ChatViewProvider(context.extensionUri, indexService, context.workspaceState);
 
@@ -31,6 +39,12 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand("wright.explainSelection", () => void chatProvider.runSelectionAction("explain")),
     vscode.commands.registerCommand("wright.reviewSelection", () => void chatProvider.runSelectionAction("review")),
     vscode.languages.registerInlineCompletionItemProvider({ pattern: "**" }, new WrightCompletionProvider()),
+    // If Wright is disabled/uninstalled, never leave built-in chat hidden.
+    {
+      dispose: () => {
+        void restoreBuiltinChatOnExit();
+      },
+    },
   );
 
   // Wright lives in the secondary (right) sidebar — open it there on startup.
@@ -45,4 +59,6 @@ export function activate(context: vscode.ExtensionContext): void {
   })();
 }
 
-export function deactivate(): void {}
+export function deactivate(): void {
+  void restoreBuiltinChatOnExit();
+}

@@ -1,5 +1,6 @@
 import * as vscode from "vscode";
 import { DEFAULT_MODEL_LIST } from "./config.js";
+import { applyBuiltinChatVisibility, openBuiltinChatPanel } from "./builtinChat.js";
 
 /**
  * Cursor-style settings editor: a full-page webview with a section sidebar,
@@ -52,12 +53,10 @@ const SECTIONS: Section[] = [
         desc: "Automatically keep all agent edits after each turn (skip the manual Keep all)",
       },
       {
-        key: "disableAIFeatures",
-        configSection: "chat",
-        invert: true,
+        key: "ui.showBuiltinChat",
         label: "Built-in IDE Chat",
         kind: "toggle",
-        desc: "Show the host Chat icon in the right sidebar next to Wright. Off hides built-in chat (Wright stays on the right)",
+        desc: "Show the host Chat icon on the right next to Wright. Off only hides it while Wright is installed — uninstalling Wright always restores built-in chat",
       },
     ],
   },
@@ -204,34 +203,17 @@ export class WrightSettingsPanel {
     if (field?.invert && typeof value === "boolean") stored = !value;
     try {
       await vscode.workspace.getConfiguration(section).update(key, stored, vscode.ConfigurationTarget.Global);
-      if (section === "chat" && key === "disableAIFeatures") {
-        const enabling = stored === false;
-        if (enabling) {
-          // Make sure the right sidebar is visible and open the host Chat view.
-          try {
-            await vscode.commands.executeCommand("workbench.action.focusAuxiliaryBar");
-            await vscode.commands.executeCommand("workbench.action.chat.open");
-          } catch {
-            try {
-              await vscode.commands.executeCommand("workbench.panel.chat.view.copilot.focus");
-            } catch {
-              /* host chat command names vary by IDE */
-            }
-          }
-        }
+      if (key === "ui.showBuiltinChat" && typeof stored === "boolean") {
+        await applyBuiltinChatVisibility(stored);
+        if (stored) await openBuiltinChatPanel();
         const choice = await vscode.window.showInformationMessage(
-          enabling
-            ? "Built-in IDE chat enabled — it should appear as a Chat icon on the right, next to Wright. Reload if you still don't see it."
-            : "Built-in IDE chat hidden. Wright stays on the right. Reload if the Chat icon is still visible.",
+          stored
+            ? "Built-in IDE chat shown on the right next to Wright. Reload if the Chat icon is missing."
+            : "Built-in IDE chat hidden for now. Uninstalling Wright will restore it automatically.",
           "Reload Window",
-          "Reset View Layout",
         );
         if (choice === "Reload Window") {
           await vscode.commands.executeCommand("workbench.action.reloadWindow");
-        } else if (choice === "Reset View Layout") {
-          await vscode.commands.executeCommand("workbench.action.resetViewLocations");
-          await vscode.commands.executeCommand("workbench.action.focusAuxiliaryBar");
-          await vscode.commands.executeCommand("wright.chat.focus");
         }
       }
     } catch (err) {
@@ -245,6 +227,8 @@ export class WrightSettingsPanel {
       const section = field.configSection ?? "wright";
       let v = vscode.workspace.getConfiguration(section).get(field.key);
       if (field.invert && typeof v === "boolean") v = !v;
+      // Default built-in chat ON when unset.
+      if (field.key === "ui.showBuiltinChat" && v === undefined) v = true;
       values[field.key] = v;
     }
     if (!Array.isArray(values["models.list"]) || (values["models.list"] as string[]).length === 0) {

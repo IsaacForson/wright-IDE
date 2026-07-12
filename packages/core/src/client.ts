@@ -25,6 +25,7 @@ interface StreamDelta {
     index: number;
     id?: string;
     function?: { name?: string; arguments?: string };
+    extra_content?: { google?: { thought_signature?: string } };
   }>;
 }
 
@@ -99,6 +100,7 @@ export class ModelClient {
       throw new ModelError("server", "Provider returned no choices");
     }
     const { reasoning_content, ...message } = choice.message;
+    ensureGeminiThoughtSignatures(message, this.provider);
     return {
       message,
       finishReason: choice.finish_reason ?? null,
@@ -168,6 +170,9 @@ export class ModelClient {
               name: tc.function?.name ?? "",
               arguments: tc.function?.arguments ?? "",
             },
+            ...(tc.extra_content?.google?.thought_signature
+              ? { extra_content: tc.extra_content }
+              : {}),
           };
           toolCalls.set(tc.index, call);
           yield { type: "tool_call_start", index: tc.index, id: call.id, name: call.function.name };
@@ -175,10 +180,15 @@ export class ModelClient {
             yield { type: "tool_call_delta", index: tc.index, id: call.id, name: call.function.name, text: call.function.arguments };
           }
         } else {
+          if (tc.id) existing.id = tc.id;
           if (tc.function?.name) existing.function.name += tc.function.name;
           if (tc.function?.arguments) {
             existing.function.arguments += tc.function.arguments;
             yield { type: "tool_call_delta", index: tc.index, id: existing.id, name: existing.function.name, text: tc.function.arguments };
+          }
+          // Signature usually arrives on the first frame; keep any later copy too.
+          if (tc.extra_content?.google?.thought_signature) {
+            existing.extra_content = tc.extra_content;
           }
         }
       }
@@ -201,6 +211,7 @@ export class ModelClient {
         tool_calls: [...toolCalls.entries()].sort(([a], [b]) => a - b).map(([, c]) => c),
       }),
     };
+    ensureGeminiThoughtSignatures(assembled, this.provider);
     yield {
       type: "done",
       result: {
@@ -286,6 +297,23 @@ export class ModelClient {
       return doFetch(keys[this.keyIndex % keys.length], false);
     }
     throw lastErr;
+  }
+}
+
+/**
+ * Gemini 3+ requires thought_signature on the first tool_call when continuing
+ * a tool loop. Preserve signatures from the API; if a proxy stripped them,
+ * fall back to Google's documented skip token so the request isn't rejected.
+ */
+function ensureGeminiThoughtSignatures(message: AssistantMessage, provider: ProviderConfig): void {
+  if (!/generativelanguage\.googleapis\.com/i.test(provider.baseUrl)) return;
+  const calls = message.tool_calls;
+  if (!calls?.length) return;
+  const first = calls[0]!;
+  if (!first.extra_content?.google?.thought_signature) {
+    first.extra_content = {
+      google: { thought_signature: "skip_thought_signature_validator" },
+    };
   }
 }
 

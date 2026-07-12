@@ -33,7 +33,6 @@
   ],
   "contributes": {
     "configurationDefaults": {
-      "chat.disableAIFeatures": false,
       "workbench.secondarySideBar.defaultVisibility": "visible",
       "workbench.welcomePage.experimentalOnboarding": false
     },
@@ -450,6 +449,11 @@
           "type": "boolean",
           "default": false,
           "description": "Automatically keep all agent edits after each turn (skip the manual Keep all). Files remain revertible only until the turn ends."
+        },
+        "wright.ui.showBuiltinChat": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show the host IDE Chat next to Wright. Off only hides it while Wright is installed; disabling/uninstalling Wright restores built-in chat."
         },
         "wright.mcp.servers": {
           "type": "object",
