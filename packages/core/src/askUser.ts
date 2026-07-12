@@ -2,8 +2,8 @@ import type { Tool } from "./tools.js";
 
 /**
  * Structured clarifying questions (Cursor-style AskQuestion).
- * The host injects a waiter that parks the agent until the user submits
- * picks in the chat UI — topics stay out of the option list by design.
+ * The model signals questions by calling this tool — the host parks until
+ * the user submits picks in the chat UI. Topics stay out of the option list.
  */
 
 export interface AskUserOption {
@@ -35,15 +35,14 @@ export function createAskUserTool(waitForAnswers: AskUserWaiter): Tool {
       function: {
         name: "ask_user",
         description:
-          "Ask the user one or more multiple-choice clarifying questions via the chat UI " +
-          "(Cursor AskQuestion style). Call this ONLY when a real decision is required BEFORE you can continue " +
-          "(which stack, which approach, confirm a destructive action, pick among alternatives). " +
-          "Do NOT call this after answering a simple question, for polite 'anything else?' offers, " +
-          "or to re-list facts you already explained (dependencies, file contents, takeaways). " +
-          "Do NOT write selectable options as markdown bullets — this tool owns the UI. " +
-          "Each question's `prompt` is the topic/header; `options` are ONLY concrete answer choices " +
-          "(never put the topic itself in options). " +
-          "Arguments MUST be a single JSON object. After calling, STOP and wait for the tool result.",
+          "SIGNAL for selectable clarifying questions in the chat UI. " +
+          "Call this whenever you need the user to choose before you can proceed " +
+          "(platform, framework, scope, auth, etc.). " +
+          "This is the ONLY way to show clickable answer chips — never write those " +
+          "choices as a markdown questionnaire. " +
+          "Do NOT use after a finished answer, for polite 'anything else?', or to re-list facts. " +
+          "Each question: `prompt` = topic; `options` = concrete answers only (never the topic). " +
+          "At most 3 questions. One JSON object. Then STOP and wait for the tool result.",
         parameters: {
           type: "object",
           properties: {
@@ -88,54 +87,10 @@ export function createAskUserTool(waitForAnswers: AskUserWaiter): Tool {
       },
     },
     async execute(args, signal) {
-      const raw = args.questions;
-      if (!Array.isArray(raw) || raw.length === 0) {
-        return { ok: false, output: "ask_user requires a non-empty questions array." };
-      }
-      const questions: AskUserQuestion[] = [];
-      for (const q of raw) {
-        if (!q || typeof q !== "object") continue;
-        const rec = q as Record<string, unknown>;
-        const id = typeof rec.id === "string" ? rec.id : `q${questions.length + 1}`;
-        const prompt = typeof rec.prompt === "string" ? rec.prompt.trim() : "";
-        const optsRaw = Array.isArray(rec.options) ? rec.options : [];
-        const options: AskUserOption[] = [];
-        for (const o of optsRaw) {
-          if (!o || typeof o !== "object") continue;
-          const opt = o as Record<string, unknown>;
-          const oid = typeof opt.id === "string" ? opt.id : `o${options.length + 1}`;
-          const label = typeof opt.label === "string" ? opt.label.trim() : "";
-          if (!label) continue;
-          // Never allow the prompt itself to sneak in as an option.
-          if (prompt && label.toLowerCase().replace(/:$/, "") === prompt.toLowerCase().replace(/[?:]$/, "")) {
-            continue;
-          }
-          options.push({
-            id: oid,
-            label,
-            description: typeof opt.description === "string" ? opt.description : undefined,
-            recommended: opt.recommended === true,
-          });
-        }
-        if (prompt && options.length >= 2) {
-          questions.push({
-            id,
-            prompt,
-            options,
-            allow_multiple: rec.allow_multiple === true,
-          });
-        }
-      }
-      if (questions.length === 0) {
-        return {
-          ok: false,
-          output:
-            "ask_user needs each question to have a prompt (topic) and at least 2 answer options. " +
-            "Do not put topics in the options list.",
-        };
-      }
+      const parsed = normalizeAskUserArgs(args);
+      if (!parsed.ok) return { ok: false, output: parsed.error };
       try {
-        const answer = await waitForAnswers({ questions }, signal);
+        const answer = await waitForAnswers({ questions: parsed.questions }, signal);
         return { ok: true, output: answer };
       } catch (err) {
         return {
@@ -145,4 +100,55 @@ export function createAskUserTool(waitForAnswers: AskUserWaiter): Tool {
       }
     },
   };
+}
+
+function normalizeAskUserArgs(
+  args: Record<string, unknown>,
+): { ok: true; questions: AskUserQuestion[] } | { ok: false; error: string } {
+  const raw = args.questions;
+  if (!Array.isArray(raw) || raw.length === 0) {
+    return { ok: false, error: "ask_user requires a non-empty questions array." };
+  }
+  const questions: AskUserQuestion[] = [];
+  for (const q of raw) {
+    if (!q || typeof q !== "object") continue;
+    const rec = q as Record<string, unknown>;
+    const id = typeof rec.id === "string" ? rec.id : `q${questions.length + 1}`;
+    const prompt = typeof rec.prompt === "string" ? rec.prompt.trim() : "";
+    const optsRaw = Array.isArray(rec.options) ? rec.options : [];
+    const options: AskUserOption[] = [];
+    for (const o of optsRaw) {
+      if (!o || typeof o !== "object") continue;
+      const opt = o as Record<string, unknown>;
+      const oid = typeof opt.id === "string" ? opt.id : `o${options.length + 1}`;
+      const label = typeof opt.label === "string" ? opt.label.trim() : "";
+      if (!label) continue;
+      if (prompt && label.toLowerCase().replace(/:$/, "") === prompt.toLowerCase().replace(/[?:]$/, "")) {
+        continue;
+      }
+      options.push({
+        id: oid,
+        label,
+        description: typeof opt.description === "string" ? opt.description : undefined,
+        recommended: opt.recommended === true,
+      });
+    }
+    if (prompt && options.length >= 2) {
+      questions.push({
+        id,
+        prompt,
+        options,
+        allow_multiple: rec.allow_multiple === true,
+      });
+    }
+  }
+  if (questions.length === 0) {
+    return {
+      ok: false,
+      error:
+        "ask_user needs each question to have a prompt (topic) and at least 2 answer options. " +
+        "Do not put topics in the options list.",
+    };
+  }
+  return { ok: true, questions: questions.slice(0, 3) };
 }

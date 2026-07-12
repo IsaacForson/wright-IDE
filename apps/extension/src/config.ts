@@ -86,7 +86,7 @@ export function composeUserRules(cfg = vscode.workspace.getConfiguration("wright
   const parts: string[] = [];
   if (cfg.get<boolean>("rules.alwaysAskFollowUps")) {
     parts.push(
-      "- When a request is ambiguous or missing a decision that would change the work, call ask_user BEFORE acting. Do not ask after you already fully answered. Do not turn summaries, dependency lists, or file contents into selectable options.",
+      "- When you need the user to choose before you can proceed, call ask_user — that is the signal for selectable answer chips. Do not write those questions as markdown. Do not ask after you already fully answered. Do not turn summaries or file contents into options.",
     );
   }
   if (cfg.get<boolean>("rules.requireDeleteApproval") ?? true) {
