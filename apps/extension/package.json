@@ -399,7 +399,35 @@
             "File edits run silently; shell commands ask (allowlisted ones run)",
             "Everything runs silently except deny-listed commands and protected paths"
           ],
-          "description": "How much Wright's agent can do without asking."
+          "description": "How much Wright's agent can do without asking (also in Settings → Permissions)."
+        },
+        "wright.permissionDefault": {
+          "type": "string",
+          "enum": [
+            "always-ask",
+            "allow-once",
+            "allow-always"
+          ],
+          "default": "always-ask",
+          "enumDescriptions": [
+            "Show the in-chat permission card for each sensitive action",
+            "After trust is granted, allow the rest of the chat session without asking",
+            "Full access — do not show the permission card"
+          ],
+          "description": "Default for the in-chat Allow always / Allow once / Always ask dialog."
+        },
+        "wright.commandRunTarget": {
+          "type": "string",
+          "enum": [
+            "terminal",
+            "sandbox"
+          ],
+          "default": "terminal",
+          "enumDescriptions": [
+            "Run shell commands in the visible Wright IDE terminal",
+            "Run shell commands in an invisible local sandbox process"
+          ],
+          "description": "Where Wright runs shell commands by default."
         },
         "wright.pricing.inputPer1M": {
           "type": "number",

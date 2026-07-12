@@ -36,6 +36,10 @@ export type WebviewToHost =
   | { type: "openFile"; path: string }
   | { type: "summarizeChat" }
   | { type: "askUserAnswer"; id: string; text: string }
+  | { type: "permissionDecision"; id: string; decision: "allow-always" | "allow-once" | "always-ask" | "deny" }
+  | { type: "setCommandRunTarget"; target: "terminal" | "sandbox" }
+  | { type: "revealTerminal" }
+  | { type: "rerunCommand"; id: string; target: "terminal" | "sandbox" }
   | { type: "copyText"; text: string }
   | { type: "applyCode"; code: string }
   /** Resolve explorer/OS drop URIs into workspace attachments. */
@@ -78,6 +82,8 @@ export type HostToWebview =
       changes: FileChangeItem[];
       planPending: boolean;
       approvalMode: "manual" | "auto-edit" | "auto";
+      permissionDefault?: "always-ask" | "allow-once" | "allow-always";
+      commandRunTarget?: "terminal" | "sandbox";
       sessionStats?: string;
       defaultMode: ChatMode;
       /** 0–1 context fill for token-based models; undefined hides the meter (NVIDIA RPM). */
@@ -97,6 +103,17 @@ export type HostToWebview =
   | { type: "thinkingDone"; seconds: number }
   | { type: "toolStart"; id: string; name: string; argsSummary: string }
   | { type: "toolDone"; id: string; status: "ok" | "error" | "declined"; output: string }
+  | { type: "toolOutput"; id: string; text: string }
+  | {
+      type: "permissionRequest";
+      id: string;
+      tool: string;
+      detail: string;
+      reason?: string;
+      /** Highlighted default from Settings → Permissions. */
+      preferred?: "always-ask" | "allow-once" | "allow-always";
+    }
+  | { type: "permissionCleared"; id: string }
   | { type: "writeCode"; id: string; path: string; code: string }
   | { type: "writeDone"; id: string; status: "ok" | "error" | "declined" }
   | { type: "changes"; changes: FileChangeItem[] }

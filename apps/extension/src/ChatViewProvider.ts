@@ -2,6 +2,7 @@ import * as vscode from "vscode";
 import {
   Agent,
   ApprovalPolicy,
+  ContextBudget,
   ModelClient,
   ModelError,
   PROVIDER_CATALOG,
@@ -87,6 +88,28 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private pendingAsk:
     | { id: string; resolve: (text: string) => void; reject: (err: Error) => void }
     | undefined;
+  /** In-chat permission card — resolved when the user picks Allow Always / Once / Always Ask. */
+  private pendingPermission:
+    | {
+        id: string;
+        resolve: (decision: "allow-always" | "allow-once" | "always-ask" | "deny") => void;
+        reject: (err: Error) => void;
+      }
+    | undefined;
+  /**
+   * Session trust from the permission card:
+   * - admin: allow everything without asking (Allow Always)
+   * - session: allow for this chat session (Allow Once)
+   */
+  private sessionTrust: "admin" | "session" | undefined;
+  /** Shell host used for agent commands + manual re-runs. */
+  private commandHost: TerminalHost | undefined;
+  /** Tool id currently streaming command output. */
+  private liveCommandId: string | undefined;
+  /** Preferred run target (IDE terminal vs sandbox). */
+  private commandRunTarget: "terminal" | "sandbox" = "terminal";
+  /** Settings → Permissions → In-chat permission default. */
+  private permissionDefault: "always-ask" | "allow-once" | "allow-always" = "always-ask";
 
   constructor(
     private readonly extensionUri: vscode.Uri,
@@ -96,7 +119,21 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   ) {
     this.model = "auto"; // routes per task: fast for Ask, vision for images, strong for agent work
     this.approvalMode = getConfig().approvalMode;
+    this.commandRunTarget = getConfig().commandRunTarget;
+    this.permissionDefault = getConfig().permissionDefault;
+    this.applyPermissionDefault();
     this.restoreSession();
+  }
+
+  /** Apply Settings → Permissions default to session trust. */
+  private applyPermissionDefault(): void {
+    if (this.permissionDefault === "allow-always") {
+      this.sessionTrust = "admin";
+    } else if (this.permissionDefault === "allow-once") {
+      this.sessionTrust = "session";
+    } else {
+      this.sessionTrust = undefined;
+    }
   }
 
   // ── Session persistence & history (Phase 10) ─────────────────────────
@@ -195,7 +232,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     view.webview.onDidReceiveMessage((msg: WebviewToHost) => this.onMessage(msg));
     const configSub = vscode.workspace.onDidChangeConfiguration((e) => {
       if (e.affectsConfiguration("wright")) {
-        this.approvalMode = getConfig().approvalMode;
+        const config = getConfig();
+        this.approvalMode = config.approvalMode;
+        this.commandRunTarget = config.commandRunTarget;
+        this.permissionDefault = config.permissionDefault;
+        if (this.commandHost) this.commandHost.target = this.commandRunTarget;
+        // Only re-apply trust from settings when not mid-turn (don't yank a live allow).
+        if (!this.abort) this.applyPermissionDefault();
         this.agent = undefined;
         this.agentBuiltFor = undefined;
         this.sendState(this.abort !== undefined);
@@ -276,6 +319,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this.agentBuiltFor = undefined;
     // Changes stay on disk; starting a new chat just stops tracking them.
     this.tracker = undefined;
+    this.commandHost = undefined;
+    this.liveCommandId = undefined;
+    if (this.pendingPermission) {
+      this.pendingPermission.reject(new ModelError("aborted", "Chat cleared"));
+      this.pendingPermission = undefined;
+    }
+    this.applyPermissionDefault();
     this.pendingPlan = undefined;
     this.savedMessages = undefined;
     this.items = [];
@@ -319,6 +369,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       changes: this.tracker?.changes() ?? [],
       planPending: this.pendingPlan !== undefined,
       approvalMode: this.approvalMode,
+      permissionDefault: this.permissionDefault,
+      commandRunTarget: this.commandRunTarget,
       sessionStats: this.formatSessionStats(),
       defaultMode: config.defaultMode,
       contextUsage: meter?.usage,
@@ -375,6 +427,99 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this.post({ type: "changes", changes: this.tracker?.changes() ?? [] });
   }
 
+  /** Park the agent on an in-chat permission card (replaces the VS Code modal). */
+  private requestPermission(
+    tool: string,
+    detail: string,
+    reason?: string,
+  ): Promise<"allow-always" | "allow-once" | "always-ask" | "deny"> {
+    const id = `perm${Date.now().toString(36)}`;
+    return new Promise((resolve, reject) => {
+      if (this.pendingPermission) {
+        this.pendingPermission.reject(new Error("Superseded by a newer permission request."));
+      }
+      this.pendingPermission = { id, resolve, reject };
+      this.post({
+        type: "permissionRequest",
+        id,
+        tool,
+        detail,
+        reason,
+        preferred: this.permissionDefault,
+      });
+      this.sendState(true);
+    });
+  }
+
+  /** Re-run a prior shell command in the IDE terminal or sandbox from the tool row menu. */
+  private async rerunCommand(id: string, target: "terminal" | "sandbox"): Promise<void> {
+    const item = this.items.find((i) => i.kind === "tool" && i.id === id);
+    if (!item || item.kind !== "tool" || item.name !== "run_command") return;
+    const command = item.argsSummary.trim();
+    if (!command) return;
+
+    if (!this.commandHost) {
+      this.rootPath ??= workspaceRoot()?.fsPath ?? os.homedir();
+      this.tracker ??= new TrackedHost(new NodeWorkspaceHost(this.rootPath));
+      this.commandHost = new TerminalHost(this.tracker, this.rootPath);
+      this.commandHost.target = this.commandRunTarget;
+    }
+
+    this.commandRunTarget = target;
+    this.commandHost.target = target;
+    void vscode.workspace.getConfiguration("wright").update("commandRunTarget", target);
+
+    const runId = `rerun${Date.now().toString(36)}`;
+    this.items.push({
+      kind: "tool",
+      id: runId,
+      name: "run_command",
+      argsSummary: command,
+      status: "running",
+      output: "",
+    });
+    this.liveCommandId = runId;
+    this.post({ type: "toolStart", id: runId, name: "run_command", argsSummary: command });
+    this.sendState(true);
+
+    try {
+      const result = await this.commandHost.runCommand(command, {
+        target,
+        onChunk: (text) => {
+          const row = this.items.find((i) => i.kind === "tool" && i.id === runId);
+          if (row?.kind === "tool") {
+            row.output = (row.output ?? "") + text;
+          }
+          this.post({ type: "toolOutput", id: runId, text });
+        },
+      });
+      const parts = [
+        `exit code: ${result.exitCode}`,
+        result.stdout.trim() && `stdout:\n${result.stdout.trim()}`,
+        result.stderr.trim() && `stderr:\n${result.stderr.trim()}`,
+      ].filter(Boolean);
+      const output = parts.join("\n\n");
+      const status = result.exitCode === 0 ? "ok" : "error";
+      const row = this.items.find((i) => i.kind === "tool" && i.id === runId);
+      if (row?.kind === "tool") {
+        row.status = status;
+        row.output = output;
+      }
+      this.post({ type: "toolDone", id: runId, status, output });
+    } catch (err) {
+      const output = err instanceof Error ? err.message : String(err);
+      const row = this.items.find((i) => i.kind === "tool" && i.id === runId);
+      if (row?.kind === "tool") {
+        row.status = "error";
+        row.output = output;
+      }
+      this.post({ type: "toolDone", id: runId, status: "error", output });
+    } finally {
+      if (this.liveCommandId === runId) this.liveCommandId = undefined;
+      this.sendState(this.abort !== undefined);
+    }
+  }
+
   private async onMessage(msg: WebviewToHost): Promise<void> {
     switch (msg.type) {
       case "ready":
@@ -395,11 +540,39 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         }
         return;
       }
+      case "permissionDecision": {
+        if (this.pendingPermission && this.pendingPermission.id === msg.id) {
+          const { resolve } = this.pendingPermission;
+          this.pendingPermission = undefined;
+          this.post({ type: "permissionCleared", id: msg.id });
+          resolve(msg.decision);
+        }
+        return;
+      }
+      case "setCommandRunTarget": {
+        this.commandRunTarget = msg.target;
+        if (this.commandHost) this.commandHost.target = msg.target;
+        void vscode.workspace.getConfiguration("wright").update("commandRunTarget", msg.target);
+        this.sendState(this.abort !== undefined);
+        return;
+      }
+      case "revealTerminal": {
+        void this.commandHost?.revealTerminal();
+        return;
+      }
+      case "rerunCommand": {
+        await this.rerunCommand(msg.id, msg.target);
+        return;
+      }
       case "stop":
         this.abort?.abort();
         if (this.pendingAsk) {
           this.pendingAsk.reject(new ModelError("aborted", "Question cancelled"));
           this.pendingAsk = undefined;
+        }
+        if (this.pendingPermission) {
+          this.pendingPermission.reject(new ModelError("aborted", "Permission cancelled"));
+          this.pendingPermission = undefined;
         }
         return;
       case "setModel":
@@ -959,8 +1132,19 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     const { client, agentModel } = failover;
 
     this.tracker ??= new TrackedHost(new NodeWorkspaceHost(this.rootPath));
-    // Commands run in a visible "Wright" terminal; edits still go through the tracker.
-    let tools = createBuiltinTools(new TerminalHost(this.tracker, this.rootPath));
+    // Commands run in a visible "Wright" terminal (or sandbox); edits still go through the tracker.
+    this.commandHost = new TerminalHost(this.tracker, this.rootPath);
+    this.commandHost.target = this.commandRunTarget;
+    this.commandHost.onChunk = (text) => {
+      if (!this.liveCommandId) return;
+      const item = this.items.find((i) => i.kind === "tool" && i.id === this.liveCommandId);
+      if (item?.kind === "tool") {
+        item.output = (item.output ?? "") + text;
+        if (item.output.length > 200_000) item.output = item.output.slice(-180_000);
+      }
+      this.post({ type: "toolOutput", id: this.liveCommandId, text });
+    };
+    let tools = createBuiltinTools(this.commandHost);
     // Embeddings always ride NVIDIA (local models don't serve our embed model).
     const embedClient = new ModelClient(nvidiaProvider({ apiKeys: config.apiKeys, chatModel: config.chatModel }));
     const indexer = root && config.apiKeys.length ? await this.indexService.ensure(embedClient, root.fsPath) : undefined;
@@ -1022,12 +1206,20 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       client,
       model: agentModel,
       tools,
+      // Match the real model window so we don't silently drop the task brief at ~56k.
+      budget: new ContextBudget({
+        contextWindow: this.contextWindowTokens(),
+        outputReserve: 8_192,
+      }),
       // Deep research fans out into many search rounds; give it headroom.
       maxIterations: research === "deep" ? 60 : research === "research" ? 40 : 25,
       systemPrompt:
         agentSystemPrompt({ workspaceName: vscode.workspace.name, rules, userRules, mode, research }) +
         (root ? "" : NO_WORKSPACE_NOTE),
       approve: async (name, args) => {
+        // Session trust from the in-chat permission card.
+        if (this.sessionTrust === "admin" || this.sessionTrust === "session") return true;
+
         let decision = new ApprovalPolicy({ mode: this.approvalMode }).decide(name, args);
         // Settings → Rules: confirm deletes even when approval mode would allow.
         if (config.requireDeleteApproval && name === "run_command") {
@@ -1037,14 +1229,34 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           }
         }
         if (decision.action === "allow") return true;
-        const detail = name === "run_command" ? String(args.command ?? "") : `${name} → ${String(args.path ?? "")}`;
-        const why = decision.reason ? ` (${decision.reason})` : "";
-        const choice = await vscode.window.showWarningMessage(
-          `Wright wants to run: ${detail}${why}`,
-          { modal: true },
-          "Allow",
-        );
-        return choice === "Allow";
+
+        const detail =
+          name === "run_command" ? String(args.command ?? "") : `${name} → ${String(args.path ?? "")}`;
+        const choice = await this.requestPermission(name, detail, decision.reason);
+        if (choice === "deny") return false;
+        if (choice === "allow-always") {
+          this.sessionTrust = "admin";
+          this.permissionDefault = "allow-always";
+          this.approvalMode = "auto";
+          void vscode.workspace.getConfiguration("wright").update("permissionDefault", "allow-always");
+          void vscode.workspace.getConfiguration("wright").update("approvalMode", "auto");
+          this.sendState(true);
+        } else if (choice === "allow-once") {
+          this.sessionTrust = "session";
+          this.permissionDefault = "allow-once";
+          void vscode.workspace.getConfiguration("wright").update("permissionDefault", "allow-once");
+          this.sendState(true);
+        } else if (choice === "always-ask") {
+          this.sessionTrust = undefined;
+          this.permissionDefault = "always-ask";
+          void vscode.workspace.getConfiguration("wright").update("permissionDefault", "always-ask");
+          if (this.approvalMode === "auto") {
+            this.approvalMode = "auto-edit";
+            void vscode.workspace.getConfiguration("wright").update("approvalMode", "auto-edit");
+          }
+          this.sendState(true);
+        }
+        return true;
       },
     });
     // Rehydrate a persisted conversation into the fresh agent (Phase 10).
@@ -1248,10 +1460,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             }
             const argsSummary = summarizeArgs(event.name, event.args);
             this.items.push({ kind: "tool", id: event.id, name: event.name, argsSummary, status: "running" });
+            if (event.name === "run_command") this.liveCommandId = event.id;
             this.post({ type: "toolStart", id: event.id, name: event.name, argsSummary });
             break;
           }
           case "tool_done": {
+            if (this.liveCommandId === event.id) this.liveCommandId = undefined;
             const status = !event.approved ? "declined" : event.result.ok ? "ok" : "error";
             const write = writes.get(event.id);
             if (write) {
@@ -1355,15 +1569,19 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   /**
-   * Auto-compact (Cursor-style): when a token-based model's context fills,
-   * replace history with a summary in the *same* chat so work can continue.
+   * Auto-compact (Cursor-style): when context fills, replace history with a
+   * summary in the *same* chat so work can continue. Uses the real model
+   * window estimate — including NVIDIA — so long agent runs don't erase the
+   * original task via silent FIFO trim alone.
    */
   private async maybeAutoCompact(): Promise<void> {
-    if (!this.contextMeterEnabled()) return;
-    const meter = this.contextMeter();
-    if (!meter || meter.usage < 0.85) return;
     const messages = this.agent ? [...this.agent.history] : (this.savedMessages ?? []);
-    if (messages.filter((m) => m.role !== "system").length < 4) return;
+    const nonSystem = messages.filter((m) => m.role !== "system");
+    if (nonSystem.length < 4) return;
+
+    const used = estimateConversationTokens(messages);
+    const budget = Math.max(4_000, this.contextWindowTokens() - 8_192);
+    if (used / budget < 0.75) return;
 
     this.post({ type: "summarizing", active: true });
     try {
@@ -1372,7 +1590,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         {
           role: "user",
           content:
-            "Context was auto-compacted because the window was nearly full. Continue from this summary of our work so far.",
+            "Context was auto-compacted because the window was nearly full. Continue from this summary of our work so far — keep the original goals and do not re-ask what we already decided.",
         },
         { role: "assistant", content: summary },
       ];
@@ -1429,7 +1647,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           role: "system",
           content:
             "You compress a coding-agent conversation into a dense handoff summary. " +
-            "Keep: goal, decisions, files touched/created, current state, remaining work, and anything the next turn must not forget. " +
+            "ALWAYS preserve: the user's original goal/request, project name and paths, decisions already made, " +
+            "files created/edited, current blocker, and the exact next step. " +
             "Drop: chatter, failed dead-ends, and raw tool dumps. Use short markdown sections. No preamble.",
         },
         {

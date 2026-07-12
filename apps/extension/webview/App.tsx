@@ -301,6 +301,19 @@ export function App() {
       }
     | undefined
   >();
+  /** In-chat tool permission card. */
+  const [pendingPermission, setPendingPermission] = useState<
+    | {
+        id: string;
+        tool: string;
+        detail: string;
+        reason?: string;
+        preferred?: "always-ask" | "allow-once" | "allow-always";
+      }
+    | undefined
+  >();
+  const [commandRunTarget, setCommandRunTarget] = useState<"terminal" | "sandbox">("terminal");
+  const [permissionDefault, setPermissionDefault] = useState<"always-ask" | "allow-once" | "allow-always">("always-ask");
 
   // Countdown for the plan suggestion: at 0, auto-continue with the agent.
   useEffect(() => {
@@ -383,6 +396,8 @@ export function App() {
           setChanges(msg.changes);
           setPlanPending(msg.planPending);
           setApprovalMode(msg.approvalMode);
+          if (msg.permissionDefault) setPermissionDefault(msg.permissionDefault);
+          if (msg.commandRunTarget) setCommandRunTarget(msg.commandRunTarget);
           setSessionStats(msg.sessionStats);
           lastDefaultMode.current = msg.defaultMode;
           setContextUsage(msg.contextUsage ?? 0);
@@ -414,6 +429,7 @@ export function App() {
         case "chatCleared":
           setSessions(undefined);
           setPendingAsk(undefined);
+          setPendingPermission(undefined);
           setMode(lastDefaultMode.current); // fresh chat starts in the configured default mode
           break;
         case "planReady":
@@ -498,10 +514,33 @@ export function App() {
             ),
           );
           break;
+        case "toolOutput":
+          setItems((prev) =>
+            prev.map((item) => {
+              if (item.kind !== "tool" || item.id !== msg.id) return item;
+              const output = (item.output ?? "") + msg.text;
+              return { ...item, output: output.length > 200_000 ? output.slice(-180_000) : output };
+            }),
+          );
+          break;
         case "askUser":
           setBusy(true);
           setStatus("Waiting for your answer");
           setPendingAsk({ id: msg.id, questions: msg.questions });
+          break;
+        case "permissionRequest":
+          setBusy(true);
+          setStatus("Waiting for permission");
+          setPendingPermission({
+            id: msg.id,
+            tool: msg.tool,
+            detail: msg.detail,
+            reason: msg.reason,
+            preferred: msg.preferred ?? permissionDefault,
+          });
+          break;
+        case "permissionCleared":
+          setPendingPermission((p) => (p?.id === msg.id ? undefined : p));
           break;
         case "writeCode":
           setBusy(true);
@@ -525,6 +564,7 @@ export function App() {
           setElapsed(0);
           setBusy(false);
           setPendingAsk(undefined);
+          setPendingPermission(undefined);
           break;
         case "contextUsage":
           setContextUsage(msg.usage);
@@ -551,7 +591,7 @@ export function App() {
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
-  }, [items, stats, pendingAsk]);
+  }, [items, stats, pendingAsk, pendingPermission]);
 
   // ── @-mention picker ─────────────────────────────────────────────────
 
@@ -832,8 +872,20 @@ export function App() {
           if (item.kind === "write") {
             return <WriteBlock key={item.id + i} item={item} />;
           }
-          return <ToolRow key={item.id + i} item={item} />;
+          return item.name === "run_command"
+            ? <CommandToolRow key={item.id + i} item={item} commandRunTarget={commandRunTarget} />
+            : <ToolRow key={item.id + i} item={item} />;
         })}
+        {pendingPermission && (
+          <PermissionCard
+            req={pendingPermission}
+            onDecide={(decision) => {
+              post({ type: "permissionDecision", id: pendingPermission.id, decision });
+              setPendingPermission(undefined);
+              setStatus(decision === "deny" ? "Thinking" : "Working");
+            }}
+          />
+        )}
         {pendingAsk && (
           <AskUserMessage
             ask={pendingAsk}
@@ -1340,6 +1392,72 @@ function WriteBlock({ item }: { item: Extract<UiItem, { kind: "write" }> }) {
   );
 }
 
+/**
+ * In-chat permission dialog — replaces the VS Code modal.
+ * Allow Always = admin for this session + persist auto mode.
+ * Allow Once = trust for this chat session.
+ * Always Ask = approve this call only; keep prompting next time.
+ */
+function PermissionCard({
+  req,
+  onDecide,
+}: {
+  req: {
+    id: string;
+    tool: string;
+    detail: string;
+    reason?: string;
+    preferred?: "always-ask" | "allow-once" | "allow-always";
+  };
+  onDecide: (decision: "allow-always" | "allow-once" | "always-ask" | "deny") => void;
+}) {
+  const title =
+    req.tool === "run_command"
+      ? "Run this command?"
+      : req.tool === "write_file" || req.tool === "edit_file"
+        ? "Allow this file change?"
+        : `Allow ${req.tool}?`;
+  const preferred = req.preferred ?? "always-ask";
+
+  return (
+    <div className="message assistant permission-card">
+      <div className="message-role">Wright</div>
+      <div className="permission-title">{title}</div>
+      {req.reason && <div className="permission-reason">{req.reason}</div>}
+      <pre className="permission-detail">{req.detail}</pre>
+      <div className="permission-actions">
+        <button
+          type="button"
+          className={`permission-btn${preferred === "allow-always" ? " primary" : ""}`}
+          onClick={() => onDecide("allow-always")}
+        >
+          Allow always
+        </button>
+        <button
+          type="button"
+          className={`permission-btn${preferred === "allow-once" ? " primary" : ""}`}
+          onClick={() => onDecide("allow-once")}
+        >
+          Allow once
+        </button>
+        <button
+          type="button"
+          className={`permission-btn${preferred === "always-ask" ? " primary" : ""}`}
+          onClick={() => onDecide("always-ask")}
+        >
+          Always ask
+        </button>
+        <button type="button" className="permission-btn ghost" onClick={() => onDecide("deny")}>
+          Deny
+        </button>
+      </div>
+      <div className="permission-hint">
+        Always = full access · Once = this chat session · Always ask = this step only. Change the default in Wright Settings → Permissions.
+      </div>
+    </div>
+  );
+}
+
 function ToolRow({ item }: { item: Extract<UiItem, { kind: "tool" }> }) {
   const [open, setOpen] = useState(false);
   const pathLike = /^(read_file|edit_file|list_dir|write_file)$/.test(item.name) && item.argsSummary;
@@ -1366,6 +1484,142 @@ function ToolRow({ item }: { item: Extract<UiItem, { kind: "tool" }> }) {
         </span>
       </button>
       {open && item.output && <pre className="tool-output">{item.output}</pre>}
+    </div>
+  );
+}
+
+/** Shell command row: click to expand live/finished output; menu for terminal vs sandbox. */
+function CommandToolRow({
+  item,
+  commandRunTarget,
+}: {
+  item: Extract<UiItem, { kind: "tool" }>;
+  commandRunTarget: "terminal" | "sandbox";
+}) {
+  const [open, setOpen] = useState(item.status === "running");
+  const [menuOpen, setMenuOpen] = useState(false);
+  const menuRef = useRef<HTMLDivElement>(null);
+  const outputRef = useRef<HTMLPreElement>(null);
+
+  useEffect(() => {
+    if (item.status === "running") setOpen(true);
+  }, [item.status]);
+
+  useEffect(() => {
+    if (open && outputRef.current) {
+      outputRef.current.scrollTop = outputRef.current.scrollHeight;
+    }
+  }, [item.output, open]);
+
+  useEffect(() => {
+    if (!menuOpen) return;
+    const onDoc = (e: MouseEvent) => {
+      if (!menuRef.current?.contains(e.target as Node)) setMenuOpen(false);
+    };
+    document.addEventListener("mousedown", onDoc);
+    return () => document.removeEventListener("mousedown", onDoc);
+  }, [menuOpen]);
+
+  const hasOutput = !!(item.output && item.output.trim());
+
+  return (
+    <div className={`tool-row-wrap command-row ${item.status}`}>
+      <div className="tool-row command-tool-row">
+        <button
+          type="button"
+          className="command-main"
+          onClick={() => setOpen((o) => !o)}
+          title={item.argsSummary}
+        >
+          <span className={`explore-chevron${open ? " open" : ""}`}>
+            <Icon name="chevron" size={10} />
+          </span>
+          <Icon name="terminal" size={13} />
+          <span className="tool-label">{item.status === "running" ? "Running" : "Ran"}</span>
+          <span className="tool-args">{item.argsSummary}</span>
+          <span className={`tool-status ${item.status}`}>
+            {item.status === "running" ? (
+              <Icon name="spinner" size={12} spin />
+            ) : item.status === "ok" ? (
+              <Icon name="check" size={12} />
+            ) : (
+              <Icon name="x" size={12} />
+            )}
+          </span>
+        </button>
+        <div className="command-menu-wrap" ref={menuRef}>
+          <button
+            type="button"
+            className="icon-button command-menu-btn"
+            title="Command options"
+            onClick={(e) => {
+              e.stopPropagation();
+              setMenuOpen((o) => !o);
+            }}
+          >
+            <Icon name="more" size={14} />
+          </button>
+          {menuOpen && (
+            <div className="command-menu">
+              <button
+                type="button"
+                onClick={() => {
+                  setMenuOpen(false);
+                  post({ type: "revealTerminal" });
+                }}
+              >
+                Open IDE terminal
+              </button>
+              <button
+                type="button"
+                disabled={item.status === "running"}
+                onClick={() => {
+                  setMenuOpen(false);
+                  post({ type: "rerunCommand", id: item.id, target: "terminal" });
+                }}
+              >
+                Run in IDE terminal
+              </button>
+              <button
+                type="button"
+                disabled={item.status === "running"}
+                onClick={() => {
+                  setMenuOpen(false);
+                  post({ type: "rerunCommand", id: item.id, target: "sandbox" });
+                }}
+              >
+                Run in sandbox
+              </button>
+              <div className="command-menu-sep" />
+              <button
+                type="button"
+                className={commandRunTarget === "terminal" ? "active" : ""}
+                onClick={() => {
+                  setMenuOpen(false);
+                  post({ type: "setCommandRunTarget", target: "terminal" });
+                }}
+              >
+                Default: IDE terminal
+              </button>
+              <button
+                type="button"
+                className={commandRunTarget === "sandbox" ? "active" : ""}
+                onClick={() => {
+                  setMenuOpen(false);
+                  post({ type: "setCommandRunTarget", target: "sandbox" });
+                }}
+              >
+                Default: sandbox
+              </button>
+            </div>
+          )}
+        </div>
+      </div>
+      {open && (
+        <pre ref={outputRef} className={`tool-output command-output${item.status === "running" ? " live" : ""}`}>
+          {hasOutput ? item.output : item.status === "running" ? "Waiting for output…" : "(no output)"}
+        </pre>
+      )}
     </div>
   );
 }

@@ -4,6 +4,8 @@ import { join } from "node:path";
 
 import type { ApprovalMode } from "@wright/core";
 
+export type PermissionDefault = "always-ask" | "allow-once" | "allow-always";
+
 export interface WrightConfig {
   apiKey: string | undefined;
   /** Full key pool for automatic rotation on rate limits. */
@@ -14,6 +16,9 @@ export interface WrightConfig {
   visionModel: string;
   webSearch: { provider: "tavily" | "brave" | "duckduckgo"; apiKey: string | undefined };
   approvalMode: ApprovalMode;
+  /** Default stance for the in-chat permission card. */
+  permissionDefault: PermissionDefault;
+  commandRunTarget: "terminal" | "sandbox";
   /** USD per 1M tokens; 0 disables the cost estimate. */
   priceInPer1M: number;
   priceOutPer1M: number;
@@ -71,6 +76,8 @@ export function getConfig(): WrightConfig {
       apiKey: cfg.get<string>("webSearch.apiKey")?.trim() || undefined,
     },
     approvalMode: (cfg.get<string>("approvalMode") as ApprovalMode) || "auto-edit",
+    permissionDefault: (cfg.get<string>("permissionDefault") as PermissionDefault) || "always-ask",
+    commandRunTarget: (cfg.get<string>("commandRunTarget") as "terminal" | "sandbox") || "terminal",
     priceInPer1M: cfg.get<number>("pricing.inputPer1M") ?? 0,
     priceOutPer1M: cfg.get<number>("pricing.outputPer1M") ?? 0,
     modelList: cfg.get<string[]>("models.list")?.filter(Boolean) ?? DEFAULT_MODEL_LIST,

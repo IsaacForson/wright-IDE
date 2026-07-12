@@ -1,4 +1,4 @@
-import type { CommandResult, DirEntry, SearchMatch, WorkspaceHost } from "./tools.js";
+import type { CommandResult, DirEntry, RunCommandOptions, SearchMatch, WorkspaceHost } from "./tools.js";
 
 /**
  * Change tracking (Phase 4.3). Wraps a WorkspaceHost and snapshots each
@@ -93,8 +93,8 @@ export class TrackedHost implements WorkspaceHost {
     return this.inner.search(query, glob);
   }
 
-  runCommand(command: string, signal?: AbortSignal): Promise<CommandResult> {
-    return this.inner.runCommand(command, signal);
+  runCommand(command: string, opts?: RunCommandOptions): Promise<CommandResult> {
+    return this.inner.runCommand(command, opts);
   }
 
   deleteFile(path: string): Promise<void> {

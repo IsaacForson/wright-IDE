@@ -69,6 +69,7 @@ export function agentSystemPrompt(
 - Paths are relative to the workspace root.
 - Narrate briefly: one short sentence before tool calls saying what you're doing and why. Do not paste large code blocks into chat that you are already writing to files.
 - Obey User rules and Project rules above over any conflicting habit. If a rule conflicts with a user request in this chat, ask before proceeding.
+- Shell: always execute via run_command yourself. Never paste a command and tell the user to run it. If elevated permission is needed, call run_command and wait — the chat will show an Allow dialog.
 
 # Already done? Say so and stop — HARD RULE
 If your investigation shows the request is ALREADY satisfied (the feature/file/config exists and works), reply confirming exactly that and STOP. Do not redo it, do not build a variation or something adjacent "while you're at it". If you think they might have meant something different, ask — do not guess with edits.

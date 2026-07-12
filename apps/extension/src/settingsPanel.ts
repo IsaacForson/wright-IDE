@@ -17,6 +17,8 @@ interface Field {
   desc: string;
   kind: FieldKind;
   options?: string[]; // for select
+  /** Display labels for select options (same order as options). */
+  optionLabels?: string[];
   placeholder?: string;
   /** select options come from the current models.list value */
   optionsFromModelList?: boolean;
@@ -49,11 +51,6 @@ const SECTIONS: Section[] = [
         desc: "Mode the chat starts in",
       },
       {
-        key: "approvalMode", label: "Approval Mode", kind: "select",
-        options: ["manual", "auto-edit", "auto"],
-        desc: "How much the agent can do without asking. manual: approve everything · auto-edit: edits run, commands ask · auto: everything runs except deny-listed actions",
-      },
-      {
         key: "edits.autoKeep", label: "Auto-keep Edits", kind: "toggle",
         desc: "Automatically keep all agent edits after each turn (skip the manual Keep all)",
       },
@@ -62,6 +59,37 @@ const SECTIONS: Section[] = [
         label: "Built-in IDE Chat",
         kind: "toggle",
         desc: "Show the host Chat icon on the right next to Wright. Off only hides it while Wright is installed — uninstalling Wright always restores built-in chat",
+      },
+    ],
+  },
+  {
+    id: "permissions",
+    title: "Permissions",
+    icon: "shield",
+    fields: [
+      {
+        key: "permissionDefault",
+        label: "In-chat permission default",
+        kind: "select",
+        options: ["always-ask", "allow-once", "allow-always"],
+        optionLabels: ["Always ask", "Allow once (session)", "Allow always"],
+        desc: "Default for the in-chat Allow dialog. Always ask: prompt each time · Allow once: trust the rest of the chat session · Allow always: full access (no prompts)",
+      },
+      {
+        key: "approvalMode",
+        label: "Approval mode",
+        kind: "select",
+        options: ["manual", "auto-edit", "auto"],
+        optionLabels: ["Manual", "Auto-edit", "Auto"],
+        desc: "What can run without the permission card. Manual: ask for edits and commands · Auto-edit: edits run, commands ask · Auto: run unless deny-listed (still respects In-chat permission default)",
+      },
+      {
+        key: "commandRunTarget",
+        label: "Command run target",
+        kind: "select",
+        options: ["terminal", "sandbox"],
+        optionLabels: ["IDE terminal", "Sandbox"],
+        desc: "Where shell commands run by default. Terminal: visible Wright IDE terminal · Sandbox: invisible local process",
       },
     ],
   },
@@ -489,8 +517,15 @@ export class WrightSettingsPanel {
     } else if (f.kind === "select") {
       const sel = document.createElement("select");
       const opts = f.optionsFromModelList ? (values["models.list"] || []) : (f.options || []);
+      const labels = f.optionLabels || [];
       const list = opts.includes(v) || v === undefined ? opts : [v, ...opts];
-      for (const o of list) { const opt = document.createElement("option"); opt.value = o; opt.textContent = o; sel.append(opt); }
+      for (const o of list) {
+        const opt = document.createElement("option");
+        opt.value = o;
+        const idx = opts.indexOf(o);
+        opt.textContent = idx >= 0 && labels[idx] ? labels[idx] : o;
+        sel.append(opt);
+      }
       if (v !== undefined) sel.value = v;
       sel.addEventListener("change", () => save(f.key, sel.value));
       wrap.append(sel);

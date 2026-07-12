@@ -52,7 +52,7 @@ export class Agent {
   constructor(private readonly opts: AgentOptions) {
     this.messages = [{ role: "system", content: opts.systemPrompt }];
     this.tools = new Map(opts.tools.map((t) => [t.definition.function.name, t]));
-    this.budget = opts.budget ?? new ContextBudget({ contextWindow: 64_000, outputReserve: 8_192 });
+    this.budget = opts.budget ?? new ContextBudget({ contextWindow: 128_000, outputReserve: 8_192 });
   }
 
   get history(): readonly ChatMessage[] {
@@ -225,7 +225,7 @@ export class Agent {
       if (!approved) {
         return {
           approved: false,
-          result: { ok: false, output: "The user declined to allow this tool call. Ask them how to proceed, or try a different approach." },
+          result: { ok: false, output: "The user denied this tool call. Call the tool again when they are ready — do not paste the command for them to run manually." },
         };
       }
     }

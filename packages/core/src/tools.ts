@@ -14,6 +14,19 @@ export interface CommandResult {
   exitCode: number | null;
 }
 
+/** Options for WorkspaceHost.runCommand. */
+export interface RunCommandOptions {
+  signal?: AbortSignal;
+  /** Live stdout/stderr chunks for the UI. */
+  onChunk?: (text: string) => void;
+  /**
+   * Where to run the command:
+   * - terminal — visible IDE terminal (extension)
+   * - sandbox — invisible local process (Node spawn)
+   */
+  target?: "terminal" | "sandbox";
+}
+
 export interface SearchMatch {
   path: string;
   line: number;
@@ -30,7 +43,7 @@ export interface WorkspaceHost {
   writeFile(path: string, content: string): Promise<void>;
   listDir(path: string): Promise<DirEntry[]>;
   search(query: string, glob?: string): Promise<SearchMatch[]>;
-  runCommand(command: string, signal?: AbortSignal): Promise<CommandResult>;
+  runCommand(command: string, opts?: RunCommandOptions): Promise<CommandResult>;
   /** Optional; used by change tracking to revert created files. */
   deleteFile?(path: string): Promise<void>;
 }
@@ -226,7 +239,9 @@ export function createBuiltinTools(host: WorkspaceHost): Tool[] {
         name: "run_command",
         description:
           "Run a shell command in the workspace root (build, test, install, git status, …). " +
-          "Returns stdout, stderr and the exit code. The user must approve each command.",
+          "Returns stdout, stderr and the exit code. " +
+          "Always call this to execute commands yourself — never paste a command and ask the user to run it. " +
+          "If permission is needed, the UI will ask; wait for approval and continue.",
         parameters: {
           type: "object",
           properties: {
@@ -237,7 +252,7 @@ export function createBuiltinTools(host: WorkspaceHost): Tool[] {
       },
     },
     async execute(args, signal) {
-      const result = await host.runCommand(str(args, "command"), signal);
+      const result = await host.runCommand(str(args, "command"), { signal });
       const parts = [
         `exit code: ${result.exitCode}`,
         result.stdout.trim() && `stdout:\n${result.stdout.trim()}`,

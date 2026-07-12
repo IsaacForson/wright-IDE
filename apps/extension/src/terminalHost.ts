@@ -1,25 +1,36 @@
 import * as vscode from "vscode";
-import type { CommandResult, DirEntry, SearchMatch, WorkspaceHost } from "@wright/core";
+import type { CommandResult, DirEntry, RunCommandOptions, SearchMatch, WorkspaceHost } from "@wright/core";
 
 /**
- * Wraps a WorkspaceHost so run_command executes in a visible "Wright"
- * integrated terminal (via the shell-integration API) — the user watches
- * commands live, exactly like Cursor. Output is still captured for the
- * agent. Falls back to the wrapped host's invisible runner when shell
- * integration isn't available.
+ * Wraps a WorkspaceHost so run_command can execute in a visible "Wright"
+ * integrated terminal (shell-integration API) or in an invisible sandbox
+ * (Node spawn via the inner host). Output is captured for the agent and
+ * optionally streamed to the chat UI via onChunk.
  */
 
 const SHELL_READY_TIMEOUT_MS = 4_000;
 const COMMAND_TIMEOUT_MS = 180_000;
 const ANSI_RE = /\x1b(?:\[[0-9;?]*[a-zA-Z]|\][^\x07]*(?:\x07|\x1b\\)|[()][A-Z0-9])/g;
 
+export type CommandRunTarget = "terminal" | "sandbox";
+
 export class TerminalHost implements WorkspaceHost {
   private terminal: vscode.Terminal | undefined;
+  /** Default run target for agent commands. */
+  target: CommandRunTarget = "terminal";
+  /** Live output callback (wired by ChatViewProvider). */
+  onChunk?: (text: string) => void;
 
   constructor(
     private readonly inner: WorkspaceHost,
     private readonly cwd: string,
   ) {}
+
+  /** Focus / create the Wright terminal without running a command. */
+  async revealTerminal(): Promise<void> {
+    const terminal = await this.getTerminal();
+    terminal.show(true);
+  }
 
   private async getTerminal(): Promise<vscode.Terminal> {
     if (!this.terminal || this.terminal.exitStatus) {
@@ -29,16 +40,24 @@ export class TerminalHost implements WorkspaceHost {
     return this.terminal;
   }
 
-  async runCommand(command: string, signal?: AbortSignal): Promise<CommandResult> {
+  async runCommand(command: string, opts?: RunCommandOptions): Promise<CommandResult> {
+    const signal = opts?.signal;
+    const onChunk = opts?.onChunk ?? this.onChunk;
+    const target = opts?.target ?? this.target;
+
+    if (target === "sandbox") {
+      return this.inner.runCommand(command, { signal, onChunk });
+    }
+
     const terminal = await this.getTerminal();
 
-    // Wait briefly for shell integration; without it, fall back silently.
+    // Wait briefly for shell integration; without it, fall back to sandbox.
     const started = Date.now();
     while (!terminal.shellIntegration && Date.now() - started < SHELL_READY_TIMEOUT_MS) {
       await new Promise((r) => setTimeout(r, 150));
     }
     const shell = terminal.shellIntegration;
-    if (!shell) return this.inner.runCommand(command, signal);
+    if (!shell) return this.inner.runCommand(command, { signal, onChunk });
 
     const execution = shell.executeCommand(command);
     let output = "";
@@ -57,6 +76,8 @@ export class TerminalHost implements WorkspaceHost {
     try {
       for await (const chunk of execution.read()) {
         output += chunk;
+        const cleanChunk = chunk.replace(ANSI_RE, "").replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+        if (cleanChunk) onChunk?.(cleanChunk);
         if (output.length > 400_000) break; // runaway output guard
       }
     } catch {
