@@ -1,7 +1,7 @@
 import type { ModelClient } from "./client.js";
-import type { ChatMessage, ToolCall, Usage } from "./types.js";
+import type { ChatMessage, ToolCall, Usage, UserMessage } from "./types.js";
 import type { Tool, ToolResult } from "./tools.js";
-import { ContextBudget } from "./tokens.js";
+import { ContextBudget, estimateConversationTokens } from "./tokens.js";
 import { ModelError } from "./errors.js";
 import { sleep } from "./retry.js";
 
@@ -13,6 +13,9 @@ import { sleep } from "./retry.js";
 
 /** Default pause between tool results and the next model call (smooths RPM spikes). */
 export const DEFAULT_STEP_THROTTLE_MS = 500;
+
+/** Fraction of input budget that triggers Cursor-style mid-loop self-summarization. */
+export const SELF_SUMMARIZE_THRESHOLD = 0.72;
 
 export interface AgentOptions {
   client: ModelClient;
@@ -33,6 +36,11 @@ export interface AgentOptions {
    * execution (the model is told the user declined). Omit to allow all.
    */
   approve?: (name: string, args: Record<string, unknown>) => Promise<boolean>;
+  /**
+   * When true (default), the agent self-summarizes mid-run when context fills —
+   * Cursor-style compaction — instead of only FIFO-trimming history.
+   */
+  selfSummarize?: boolean;
 }
 
 export type AgentEvent =
@@ -42,12 +50,18 @@ export type AgentEvent =
   | { type: "tool_args_delta"; id: string; name: string; text: string }
   | { type: "tool_start"; id: string; name: string; args: Record<string, unknown> }
   | { type: "tool_done"; id: string; name: string; result: ToolResult; approved: boolean }
+  /** Mid-loop context compaction started (Cursor-style self-summarization). */
+  | { type: "compacting"; generation: number }
+  /** Mid-loop compaction finished; history was replaced with a handoff summary. */
+  | { type: "compacted"; generation: number; summary: string }
   | { type: "done"; finalText: string; iterations: number; usage: Usage };
 
 export class Agent {
   private messages: ChatMessage[];
   private readonly tools: Map<string, Tool>;
   private readonly budget: ContextBudget;
+  /** How many self-summaries this agent instance has produced. */
+  private summarizeGenerations = 0;
 
   constructor(private readonly opts: AgentOptions) {
     this.messages = [{ role: "system", content: opts.systemPrompt }];
@@ -59,8 +73,14 @@ export class Agent {
     return this.messages;
   }
 
+  /** Estimated fill of the input budget (0–1+). */
+  get contextFill(): number {
+    return estimateConversationTokens(this.messages) / Math.max(1, this.budget.inputBudget);
+  }
+
   reset(): void {
     this.messages = this.messages.slice(0, 1);
+    this.summarizeGenerations = 0;
   }
 
   /** Restore a persisted conversation (Phase 10). Keeps the current system prompt. */
@@ -101,6 +121,20 @@ export class Agent {
     );
 
     for (let iteration = 1; iteration <= maxIterations; iteration++) {
+      // Cursor-style: when context is full, pause and self-summarize before the next call.
+      if (this.shouldSelfSummarize()) {
+        const generation = this.summarizeGenerations + 1;
+        yield { type: "compacting", generation };
+        try {
+          const summary = await this.selfSummarize(runOpts.signal);
+          this.summarizeGenerations = generation;
+          yield { type: "compacted", generation, summary };
+        } catch (err) {
+          if (err instanceof ModelError && err.kind === "aborted") throw err;
+          // Compaction is best-effort — fall through to trimToFit.
+        }
+      }
+
       this.messages = this.budget.trimToFit(this.messages);
       const request = {
         model,
@@ -193,6 +227,78 @@ export class Agent {
     const capNote = `[Agent stopped: reached the maximum of ${maxIterations} iterations for this turn.]`;
     this.messages.push({ role: "assistant", content: capNote });
     yield { type: "done", finalText: finalText || capNote, iterations: maxIterations, usage: totalUsage };
+  }
+
+  private shouldSelfSummarize(): boolean {
+    if (this.opts.selfSummarize === false) return false;
+    const nonSystem = this.messages.filter((m) => m.role !== "system");
+    if (nonSystem.length < 6) return false;
+    return this.contextFill >= SELF_SUMMARIZE_THRESHOLD;
+  }
+
+  /**
+   * Cursor-style mid-horizon compaction: ask the model to summarize, then
+   * replace history with system + original goal + handoff (+ latest user ask).
+   */
+  private async selfSummarize(signal?: AbortSignal): Promise<string> {
+    const { client, model } = this.opts;
+    const transcript = buildCompactTranscript(this.messages);
+    const generation = this.summarizeGenerations + 1;
+
+    const result = await client.complete(
+      {
+        model,
+        max_tokens: 1_500,
+        messages: [
+          {
+            role: "system",
+            content:
+              "You are compacting an agent coding session so work can continue in a smaller context window. " +
+              "Write a dense handoff the same agent will read next. " +
+              "ALWAYS preserve: original user goal, project/path names, decisions already made, files created/edited, " +
+              "current blocker, and the exact next step. " +
+              "Drop: chatter, failed dead-ends, raw logs. Short markdown. No preamble.",
+          },
+          {
+            role: "user",
+            content:
+              `This is self-summarization #${generation}. Summarize the session so far so you can continue the same task:\n\n` +
+              transcript,
+          },
+        ],
+      },
+      { signal },
+    );
+
+    const summary = result.message.content?.trim();
+    if (!summary) throw new Error("Empty self-summary");
+
+    const system = this.messages.find((m) => m.role === "system") ?? this.messages[0]!;
+    const users = this.messages.filter((m): m is UserMessage => m.role === "user");
+    const firstUser = users[0];
+    const lastUser = users[users.length - 1];
+
+    const compacted: ChatMessage[] = [system];
+    if (firstUser) compacted.push(cloneUserMessage(firstUser));
+    compacted.push({
+      role: "assistant",
+      content:
+        `## Context handoff (${generation})\n\n${summary}\n\n` +
+        `_Prior context was compacted to stay within the window. Continue from here — do not re-ask settled decisions._`,
+    });
+    if (lastUser && lastUser !== firstUser) {
+      compacted.push(cloneUserMessage(lastUser));
+    } else {
+      compacted.push({
+        role: "user",
+        content:
+          "Continue from the handoff above. Take the next concrete step toward the goal. " +
+          "Do not re-ask decisions already made.",
+      });
+    }
+
+    this.messages = compacted;
+    return summary;
   }
 
   private async executeCall(
@@ -367,3 +473,39 @@ function extractFirstJsonValue(text: string): string | undefined {
 
 /** Exported for focused tests / debugging of tool-arg repair. */
 export const _parseArgsForTest = parseArgs;
+
+function cloneUserMessage(msg: UserMessage): UserMessage {
+  if (Array.isArray(msg.content)) {
+    return { role: "user", content: msg.content.map((p) => ({ ...p })) };
+  }
+  return { role: "user", content: msg.content };
+}
+
+/** Compact transcript for the self-summarize call (tools heavily truncated). */
+function buildCompactTranscript(messages: ChatMessage[]): string {
+  return messages
+    .filter((m) => m.role !== "system")
+    .map((m) => {
+      if (m.role === "tool") {
+        return `TOOL: ${String(m.content).slice(0, 600)}`;
+      }
+      if (m.role === "assistant") {
+        const tools = m.tool_calls
+          ?.map((t) => `${t.function.name}(${t.function.arguments.slice(0, 160)})`)
+          .join("; ");
+        const body = (m.content ?? "").slice(0, 2_500);
+        return tools ? `ASSISTANT: ${body}\n[tools: ${tools}]` : `ASSISTANT: ${body}`;
+      }
+      if (m.role === "user") {
+        const body =
+          typeof m.content === "string"
+            ? m.content
+            : m.content.map((p) => (p.type === "text" ? p.text : "[image]")).join(" ");
+        return `USER: ${body.slice(0, 3_000)}`;
+      }
+      return "";
+    })
+    .filter(Boolean)
+    .join("\n\n")
+    .slice(0, 48_000);
+}

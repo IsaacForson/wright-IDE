@@ -1482,6 +1482,24 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             if (event.name === "write_file" || event.name === "edit_file") this.sendChanges();
             break;
           }
+          case "compacting": {
+            endThinking();
+            currentText = undefined;
+            this.post({ type: "summarizing", active: true });
+            this.sendState(true);
+            break;
+          }
+          case "compacted": {
+            this.post({ type: "summarizing", active: false });
+            const note =
+              `**Context handoff #${event.generation}**\n\n${event.summary}\n\n---\nContinuing from the compacted history.`;
+            this.items.push({ kind: "text", role: "assistant", content: note });
+            this.post({ type: "assistantStart" });
+            this.post({ type: "delta", text: note });
+            this.pushContextUsage();
+            this.sendState(true);
+            break;
+          }
           case "done": {
             endThinking();
             this.sessionUsage.input += event.usage.prompt_tokens;

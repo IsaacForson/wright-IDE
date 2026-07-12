@@ -574,10 +574,9 @@ export function App() {
           setSummarizing(msg.active);
           if (msg.active) {
             setBusy(true);
-            setStatus("Summarizing");
-          } else {
-            setBusy(false);
+            setStatus("Compacting context");
           }
+          // Do not clear busy here — mid-loop compaction continues the agent turn.
           break;
         case "error":
           setError(msg.message);
