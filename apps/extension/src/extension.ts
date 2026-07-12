@@ -36,6 +36,9 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand("wright.inlineEdit", () => void inlineEdit()),
     vscode.commands.registerCommand("wright.generateCommitMessage", () => void generateCommitMessage()),
     vscode.commands.registerCommand("wright.addSelectionToChat", () => void chatProvider.addSelectionToChat()),
+    vscode.commands.registerCommand("wright.addToChat", (uri?: vscode.Uri, uris?: vscode.Uri[]) =>
+      void chatProvider.addUrisToChat(uris?.length ? uris : uri ? [uri] : undefined),
+    ),
     vscode.commands.registerCommand("wright.explainSelection", () => void chatProvider.runSelectionAction("explain")),
     vscode.commands.registerCommand("wright.reviewSelection", () => void chatProvider.runSelectionAction("review")),
     vscode.languages.registerInlineCompletionItemProvider({ pattern: "**" }, new WrightCompletionProvider()),

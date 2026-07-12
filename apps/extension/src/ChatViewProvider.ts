@@ -218,6 +218,30 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     });
   }
 
+  /** Explorer / command: attach file or folder URIs to the composer. */
+  async addUrisToChat(uris?: readonly vscode.Uri[]): Promise<void> {
+    if (!uris?.length) {
+      await this.pickAttachments();
+      return;
+    }
+    await this.ensureViewOpen();
+    await this.handleResolveDrops(uris.map((u) => u.toString(true)));
+  }
+
+  /** Paperclip: native file/folder picker (reliable — VS Code blocks webview drops without Shift). */
+  async pickAttachments(): Promise<void> {
+    await this.ensureViewOpen();
+    const uris = await vscode.window.showOpenDialog({
+      canSelectMany: true,
+      canSelectFiles: true,
+      canSelectFolders: true,
+      openLabel: "Attach to Wright",
+      defaultUri: workspaceRoot(),
+    });
+    if (!uris?.length) return;
+    await this.handleResolveDrops(uris.map((u) => u.toString(true)));
+  }
+
   /** Editor context menu: one-shot Explain / Review on the selection (Ask mode). */
   async runSelectionAction(action: "explain" | "review"): Promise<void> {
     const info = getActiveFile();
@@ -511,6 +535,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       }
       case "queryFiles":
         await this.handleQueryFiles(msg.query, msg.token);
+        return;
+      case "resolveDrops":
+        await this.handleResolveDrops(msg.uris);
+        return;
+      case "pickAttachments":
+        await this.pickAttachments();
         return;
       case "executePlan": {
         const pending = this.pendingPlan;
@@ -835,6 +865,70 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       })
       .slice(0, 25);
     this.post({ type: "fileList", token, entries: scored });
+  }
+
+  /** Turn explorer/OS drop URIs into composer attachments (same tray as @ / paperclip). */
+  private async handleResolveDrops(uris: string[]): Promise<void> {
+    for (const raw of uris) {
+      const trimmed = raw.trim();
+      if (!trimmed || trimmed.startsWith("#")) continue;
+      try {
+        const uri =
+          /^[a-z][a-z0-9+.-]*:/i.test(trimmed) ? vscode.Uri.parse(trimmed) : vscode.Uri.file(trimmed);
+        if (uri.scheme === "http" || uri.scheme === "https") {
+          continue;
+        }
+        if (uri.scheme !== "file") continue;
+
+        const stat = await vscode.workspace.fs.stat(uri);
+        const isDir = (stat.type & vscode.FileType.Directory) !== 0;
+        const base = uri.fsPath.split(/[/\\]/).pop() ?? uri.fsPath;
+        const folder = vscode.workspace.getWorkspaceFolder(uri);
+        const image = /\.(png|jpe?g|gif|webp|bmp)$/i.test(base);
+
+        if (image && !isDir) {
+          if (stat.size > 4_000_000) continue;
+          const bytes = await vscode.workspace.fs.readFile(uri);
+          const mime =
+            /\.png$/i.test(base) ? "image/png"
+            : /\.webp$/i.test(base) ? "image/webp"
+            : /\.gif$/i.test(base) ? "image/gif"
+            : "image/jpeg";
+          this.post({
+            type: "attachImage",
+            dataUrl: `data:${mime};base64,${Buffer.from(bytes).toString("base64")}`,
+          });
+          continue;
+        }
+
+        if (folder) {
+          const rel = vscode.workspace.asRelativePath(uri, false).replace(/\\/g, "/");
+          this.post({
+            type: "attachSelection",
+            file: {
+              name: isDir ? `${base}/` : base,
+              path: rel,
+              kind: isDir ? "dir" : "file",
+            },
+          });
+          continue;
+        }
+
+        // Outside the workspace: inline file contents (folders skipped).
+        if (isDir) continue;
+        if (/\.(png|jpe?g|gif|webp|bmp|ico|pdf|zip|gz|wasm|exe|dll|so|dylib)$/i.test(base)) continue;
+        if (stat.size > 256_000) continue;
+        const bytes = await vscode.workspace.fs.readFile(uri);
+        const content = Buffer.from(bytes).toString("utf8");
+        if (content.includes("\u0000")) continue;
+        this.post({
+          type: "attachSelection",
+          file: { name: base, content: content.slice(0, 16_000), kind: "file" },
+        });
+      } catch {
+        // skip unreadable drops
+      }
+    }
   }
 
   private async buildAgent(_apiKey: string, model: string, mode: AgentMode, research: ResearchMode): Promise<Agent> {
@@ -1362,19 +1456,48 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     if (!files || files.length === 0) return text;
     const blocks: string[] = [];
     for (const file of files) {
+      if (file.kind === "dir" && file.path && this.tracker) {
+        try {
+          const entries = await this.tracker.listDir(file.path);
+          const listing = entries.map((e) => (e.type === "dir" ? `${e.name}/` : e.name)).join("\n");
+          blocks.push(`\n\n[Attached folder @${file.path} — contents]\n${listing.slice(0, 4_000)}`);
+        } catch {
+          blocks.push(`\n\n[Attached folder @${file.path}]`);
+        }
+        continue;
+      }
+
       let content = file.content;
       if (content === undefined && file.path && this.tracker) {
+        const rel = this.toWorkspaceRelative(file.path);
         try {
-          content = await this.tracker.readFile(file.path);
+          content = await this.tracker.readFile(rel);
         } catch {
-          content = undefined;
+          // Might be a folder dropped without kind set.
+          try {
+            const entries = await this.tracker.listDir(rel);
+            const listing = entries.map((e) => (e.type === "dir" ? `${e.name}/` : e.name)).join("\n");
+            blocks.push(`\n\n[Attached folder @${rel} — contents]\n${listing.slice(0, 4_000)}`);
+            continue;
+          } catch {
+            content = undefined;
+          }
         }
       }
       if (content !== undefined) {
-        blocks.push(`\n\n[Attached file: ${file.path ?? file.name}]\n\`\`\`\n${content.slice(0, 16_000)}\n\`\`\``);
+        const label = file.path ?? file.name;
+        blocks.push(`\n\n[Attached file @${label}]\n\`\`\`\n${content.slice(0, 16_000)}\n\`\`\``);
       }
     }
     return blocks.length > 0 ? text + blocks.join("") : text;
+  }
+
+  /** Prefer workspace-relative paths for host file tools. */
+  private toWorkspaceRelative(p: string): string {
+    if (!p.startsWith("/") && !/^[a-zA-Z]:[\\/]/.test(p)) return p.replace(/\\/g, "/");
+    const uri = vscode.Uri.file(p);
+    if (!vscode.workspace.getWorkspaceFolder(uri)) return p;
+    return vscode.workspace.asRelativePath(uri, false).replace(/\\/g, "/");
   }
 
   private html(webview: vscode.Webview): string {

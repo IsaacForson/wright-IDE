@@ -434,7 +434,15 @@ export function App() {
           }
           break;
         case "attachSelection":
-          setPendingFiles((p) => [...p, msg.file]);
+          setPendingFiles((p) => {
+            const key = msg.file.path ?? msg.file.name;
+            if (p.some((f) => (f.path ?? f.name) === key)) return p;
+            return [...p, msg.file];
+          });
+          inputRef.current?.focus();
+          break;
+        case "attachImage":
+          setPendingImages((p) => [...p, msg.dataUrl]);
           inputRef.current?.focus();
           break;
         case "toggleHistory":
@@ -629,42 +637,64 @@ export function App() {
     const reader = new FileReader();
     reader.onload = () => {
       if (typeof reader.result === "string") {
-        setPendingFiles((p) => [...p, { name: file.name, content: reader.result as string }]);
+        setPendingFiles((p) => [...p, { name: file.name, content: reader.result as string, kind: "file" }]);
       }
     };
     reader.readAsText(file);
   };
 
+  /** Explorer/OS drops: Files type OR VS Code uri-list (often no Files entry). */
+  const isAttachDrag = (dt: DataTransfer) => {
+    const types = [...dt.types];
+    return (
+      types.includes("Files") ||
+      types.includes("text/uri-list") ||
+      types.includes("application/vnd.code.uri-list")
+    );
+  };
+
   const addDropped = (dt: DataTransfer) => {
-    // Files dragged from the OS.
-    for (const file of Array.from(dt.files)) {
-      if (file.type.startsWith("image/")) addImageFile(file);
-      else addTextFile(file);
+    const uris: string[] = [];
+    const seen = new Set<string>();
+    const pushUri = (u: string) => {
+      const t = u.trim();
+      if (!t || t.startsWith("#") || seen.has(t)) return;
+      seen.add(t);
+      uris.push(t);
+    };
+
+    // VS Code explorer mimes — must read synchronously in the drop handler.
+    for (const type of [
+      "application/vnd.code.uri-list",
+      "text/uri-list",
+      "text/plain",
+    ]) {
+      const raw = dt.getData(type);
+      if (!raw) continue;
+      for (const line of raw.split(/\r?\n/)) pushUri(line);
     }
-    // Files dragged from the VS Code explorer arrive as a uri-list — under
-    // VS Code's own mime type, with text/uri-list as a fallback.
-    const uriList = dt.getData("application/vnd.code.uri-list") || dt.getData("text/uri-list");
-    if (uriList && dt.files.length === 0) {
-      for (const line of uriList.split(/\r?\n/)) {
-        if (!line || line.startsWith("#")) continue;
-        try {
-          const url = new URL(line.trim());
-          // Web links dropped into the chat: put the URL in the message so
-          // the agent reads it with read_url.
-          if (url.protocol === "http:" || url.protocol === "https:") {
-            setInput((v) => (v ? `${v.trimEnd()} ${url.href} ` : `${url.href} `));
-            continue;
-          }
-          if (url.protocol === "file:") {
-            const fsPath = decodeURIComponent(url.pathname);
-            const name = fsPath.split("/").pop() ?? fsPath;
-            if (/\.(png|jpe?g|gif|webp|bmp)$/i.test(name)) continue; // host reads text only
-            setPendingFiles((p) => (p.some((f) => f.path === fsPath) ? p : [...p, { name, path: fsPath }]));
-          }
-        } catch {
-          // not a URI
-        }
+
+    for (const file of Array.from(dt.files)) {
+      const electronPath = (file as File & { path?: string }).path;
+      if (electronPath) {
+        pushUri(electronPath);
+        continue;
       }
+      if (file.type.startsWith("image/")) addImageFile(file);
+      else if (uris.length === 0) addTextFile(file);
+    }
+
+    const local: string[] = [];
+    for (const u of uris) {
+      if (/^https?:/i.test(u)) {
+        setInput((v) => (v ? `${v.trimEnd()} ${u} ` : `${u} `));
+      } else {
+        local.push(u);
+      }
+    }
+
+    if (local.length > 0) {
+      post({ type: "resolveDrops", uris: local });
     }
   };
 
@@ -754,14 +784,14 @@ export function App() {
     <div
       className={`app${dragOver ? " drag-over" : ""}`}
       onDragEnter={(e) => {
-        // Ignore non-file drags (tabs, text, tree items without files).
-        if (![...e.dataTransfer.types].includes("Files")) return;
+        // Explorer drops often have uri-list without a Files type.
+        if (!isAttachDrag(e.dataTransfer)) return;
         e.preventDefault();
         dragDepth.current += 1;
         setDragOver(true);
       }}
       onDragOver={(e) => {
-        if (![...e.dataTransfer.types].includes("Files")) return;
+        if (!isAttachDrag(e.dataTransfer)) return;
         e.preventDefault();
         e.dataTransfer.dropEffect = "copy";
       }}
@@ -774,6 +804,7 @@ export function App() {
       }}
       onDrop={(e) => {
         e.preventDefault();
+        e.stopPropagation();
         dragDepth.current = 0;
         setDragOver(false);
         addDropped(e.dataTransfer);
@@ -782,8 +813,8 @@ export function App() {
       {dragOver && (
         <div className="drop-overlay" aria-hidden>
           <Icon name="attach" size={28} />
-          <span>Drop files to attach as context</span>
-          <span className="drop-overlay-hint">Esc to cancel</span>
+          <span>Drop to attach as context</span>
+          <span className="drop-overlay-hint">Hold Shift while dropping (VS Code requirement)</span>
         </div>
       )}
 
@@ -999,9 +1030,9 @@ export function App() {
                 </div>
               ))}
               {pendingFiles.map((file, i) => (
-                <div key={`file${i}`} className="attach-pill">
-                  <Icon name="file" size={12} />
-                  <span>{file.name}</span>
+                <div key={`file${i}`} className="attach-pill" title={file.path ?? file.name}>
+                  <Icon name={file.kind === "dir" ? "folder" : "file"} size={12} />
+                  <span>{file.path ?? file.name}</span>
                   <button className="attach-remove inline" onClick={() => setPendingFiles((p) => p.filter((_, j) => j !== i))}>
                     <Icon name="x" size={9} />
                   </button>
@@ -1024,21 +1055,14 @@ export function App() {
           />
 
           <div className="composer-bar">
-            <label className="icon-button" title="Attach files or images">
+            <button
+              type="button"
+              className="icon-button"
+              title="Attach files or folders"
+              onClick={() => post({ type: "pickAttachments" })}
+            >
               <Icon name="attach" size={14} />
-              <input
-                type="file"
-                multiple
-                style={{ display: "none" }}
-                onChange={(e) => {
-                  for (const f of Array.from(e.target.files ?? [])) {
-                    if (f.type.startsWith("image/")) addImageFile(f);
-                    else addTextFile(f);
-                  }
-                  e.target.value = "";
-                }}
-              />
-            </label>
+            </button>
             <Select
               value={mode}
               options={MODE_OPTIONS}

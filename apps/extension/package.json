@@ -92,6 +92,11 @@
         "title": "Add Selection to Chat"
       },
       {
+        "command": "wright.addToChat",
+        "title": "Add to Wright Chat",
+        "icon": "$(add)"
+      },
+      {
         "command": "wright.explainSelection",
         "title": "Explain"
       },
@@ -153,6 +158,12 @@
           "command": "wright.reviewSelection",
           "when": "editorHasSelection",
           "group": "0_wright@4"
+        }
+      ],
+      "explorer/context": [
+        {
+          "command": "wright.addToChat",
+          "group": "2_workspace@1"
         }
       ]
     },

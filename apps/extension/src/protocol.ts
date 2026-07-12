@@ -14,6 +14,8 @@ export interface FileAttachment {
   path?: string;
   /** Inline content for files dropped from outside the workspace. */
   content?: string;
+  /** Folder drops attach a listing instead of file contents. */
+  kind?: "file" | "dir";
 }
 
 /** Webview → extension */
@@ -36,6 +38,9 @@ export type WebviewToHost =
   | { type: "askUserAnswer"; id: string; text: string }
   | { type: "copyText"; text: string }
   | { type: "applyCode"; code: string }
+  /** Resolve explorer/OS drop URIs into workspace attachments. */
+  | { type: "resolveDrops"; uris: string[] }
+  | { type: "pickAttachments" }
   | { type: "listSessions" }
   | { type: "openSession"; id: string }
   | { type: "deleteSession"; id: string }
@@ -81,6 +86,7 @@ export type HostToWebview =
       contextMeterEnabled?: boolean;
     }
   | { type: "attachSelection"; file: FileAttachment }
+  | { type: "attachImage"; dataUrl: string }
   | { type: "toggleHistory" }
   | { type: "chatCleared" }
   | { type: "planReady" }
