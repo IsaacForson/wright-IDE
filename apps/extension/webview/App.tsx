@@ -147,6 +147,17 @@ const MODEL_HINTS: Record<string, string> = {
   "meta/llama-3.1-8b-instruct": "fastest · light tasks",
 };
 
+/** Format elapsed seconds as "12s" or "1m 38s" (and "2h 3m" for long runs). */
+function formatElapsed(totalSeconds: number): string {
+  const s = Math.max(0, Math.floor(totalSeconds));
+  if (s < 60) return `${s}s`;
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const sec = s % 60;
+  if (h > 0) return sec > 0 ? `${h}h ${m}m ${sec}s` : m > 0 ? `${h}h ${m}m` : `${h}h`;
+  return sec > 0 ? `${m}m ${sec}s` : `${m}m`;
+}
+
 /** Human-readable live activity label for the status line. */
 function activityLabel(name: string, args: string): string {
   const short = args.length > 46 ? args.slice(0, 46) + "…" : args;
@@ -664,7 +675,7 @@ export function App() {
           <div className="status-line">
             <Icon name="spinner" size={12} spin />
             <span className="status-text shimmer">{status}</span>
-            {elapsed > 0 && <span className="status-elapsed">{elapsed}s</span>}
+            {elapsed > 0 && <span className="status-elapsed">{formatElapsed(elapsed)}</span>}
           </div>
         )}
         {!busy && stats && <div className="turn-stats">{stats}</div>}
@@ -824,7 +835,7 @@ export function App() {
                   icon: modelIcon(m),
                   hint: modelHint(m),
                 })),
-                { value: "__manage__", label: "Manage cloud models…", icon: "gear" },
+                { value: "__manage__", label: "Manage models…", icon: "gear", hint: "show / hide any provider" },
                 { value: "__local__", label: "Local models…", icon: "plus", hint: "download & use" },
               ]}
               onChange={(v) => {
@@ -956,7 +967,7 @@ function TextMessage(props: { role: "user" | "assistant"; html: string; streamin
 
 function ThinkingBlock({ item, streaming }: { item: Extract<UiItem, { kind: "thinking" }>; streaming: boolean }) {
   const [open, setOpen] = useState(false);
-  const label = streaming && item.seconds === 0 ? "Thinking…" : `Thought for ${Math.max(item.seconds, 1)}s`;
+  const label = streaming && item.seconds === 0 ? "Thinking…" : `Thought for ${formatElapsed(Math.max(item.seconds, 1))}`;
   return (
     <div className="thinking-block">
       <button className="thinking-header" onClick={() => setOpen((o) => !o)}>

@@ -4,6 +4,7 @@ import {
   ApprovalPolicy,
   ModelClient,
   ModelError,
+  PROVIDER_CATALOG,
   TrackedHost,
   agentSystemPrompt,
   type ApprovalMode,
@@ -13,6 +14,7 @@ import {
   createReadUrlTool,
   createWebSearchTool,
   executionMessage,
+  formatModelRef,
   generatePlan,
   nvidiaProvider,
   planContext,
@@ -23,7 +25,7 @@ import { createDiagnosticsTool } from "./diagnosticsTool.js";
 import { TerminalHost } from "./terminalHost.js";
 import { DEFAULT_MODEL_LIST, getConfig } from "./config.js";
 import { RECOMMENDED_LOCAL_MODELS, deleteModel, ensureOllamaRunning, listLocalModels, offerOllamaInstall, pullModel } from "./ollama.js";
-import { buildFailoverClient, buildPickerModels, hasAnyCloudCredential } from "./providers.js";
+import { buildFailoverClient, buildPickerModels, getCloudProviders, hasAnyCloudCredential } from "./providers.js";
 import { getActiveFile, workspaceRoot } from "./workspace.js";
 import * as os from "node:os";
 import type { ChatMode, FileAttachment, HostToWebview, ResearchMode, UiItem, WebviewToHost } from "./protocol.js";
@@ -358,17 +360,56 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         return;
       }
       case "manageModels": {
-        // Checkbox list: checked models appear in the picker.
+        // Multi-select across NVIDIA + every cloud provider. Checked = shown
+        // in the chat picker (cloud entries still need a key to appear).
         const config = getConfig();
-        const all = [...new Set([...DEFAULT_MODEL_LIST, ...config.modelList])];
-        const picked = await vscode.window.showQuickPick(
-          all.map((m) => ({ label: m, picked: config.modelList.includes(m) })),
-          { canPickMany: true, title: "Wright: models shown in the picker" },
-        );
-        if (picked) {
-          await vscode.workspace.getConfiguration("wright").update("models.list", picked.map((p) => p.label), true);
-          this.sendState(this.abort !== undefined);
+        const clouds = getCloudProviders();
+        type PickItem = vscode.QuickPickItem & { providerId: string; modelId: string };
+        const items: PickItem[] = [];
+
+        const nvidiaAll = [...new Set([...DEFAULT_MODEL_LIST, ...config.modelList])];
+        for (const m of nvidiaAll) {
+          items.push({
+            label: m,
+            description: "NVIDIA NIM",
+            picked: config.modelList.includes(m),
+            providerId: "nvidia",
+            modelId: m,
+          });
         }
+        for (const p of clouds) {
+          const catalogModels = PROVIDER_CATALOG[p.id]?.suggestedModels ?? [];
+          const all = [...new Set([...catalogModels, ...p.models])];
+          for (const m of all) {
+            items.push({
+              label: m,
+              description: p.apiKey ? p.name : `${p.name} (no API key yet)`,
+              detail: formatModelRef(p.id, m),
+              picked: p.models.includes(m),
+              providerId: p.id,
+              modelId: m,
+            });
+          }
+        }
+
+        const picked = await vscode.window.showQuickPick(items, {
+          canPickMany: true,
+          title: "Wright: models shown in the picker",
+          placeHolder: "Uncheck to hide · cloud models need an API key in Settings to appear",
+          matchOnDescription: true,
+          matchOnDetail: true,
+        });
+        if (!picked) return;
+
+        const cfg = vscode.workspace.getConfiguration("wright");
+        const nvidiaPicked = picked.filter((p) => p.providerId === "nvidia").map((p) => p.modelId);
+        await cfg.update("models.list", nvidiaPicked, true);
+
+        for (const cloud of clouds) {
+          const models = picked.filter((p) => p.providerId === cloud.id).map((p) => p.modelId);
+          await cfg.update(`providers.${cloud.id}.models`, models, true);
+        }
+        this.sendState(this.abort !== undefined);
         return;
       }
       case "openFile": {
