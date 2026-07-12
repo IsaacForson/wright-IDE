@@ -224,11 +224,13 @@
           "type": "array",
           "items": { "type": "string" },
           "default": [
-            "qwen/qwen3-coder:free",
-            "deepseek/deepseek-chat-v3-0324:free",
-            "deepseek/deepseek-r1-0528:free"
+            "poolside/laguna-m.1:free",
+            "openai/gpt-oss-120b:free",
+            "nvidia/nemotron-3-super-120b-a12b:free",
+            "cohere/north-mini-code:free",
+            "openrouter/free"
           ],
-          "description": "OpenRouter free coding/reasoning models shown in the picker (editable; free tiers change over time)."
+          "description": "OpenRouter free coding models (must still be $0 on openrouter.ai/models). DeepSeek :free removed; Qwen :free retiring Jul 2026."
         },
         "wright.providers.deepseek.enabled": {
           "type": "boolean",
@@ -275,8 +277,8 @@
         "wright.providers.gemini.models": {
           "type": "array",
           "items": { "type": "string" },
-          "default": ["gemini-2.5-flash", "gemini-2.5-pro"],
-          "description": "Gemini model ids shown in the picker (2.5 Flash/Pro — best free reasoning + context)."
+          "default": ["gemini-3.5-flash", "gemini-3.1-flash-lite", "gemini-3-flash-preview"],
+          "description": "Gemini model ids for the picker. Prefer 3.5 Flash — 2.5 Flash is blocked for new users; Pro is paid-only."
         },
         "wright.providers.cerebras.enabled": {
           "type": "boolean",

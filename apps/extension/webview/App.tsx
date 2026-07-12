@@ -111,7 +111,7 @@ function modelHint(id: string): string | undefined {
   if (id.startsWith("openrouter:")) return "openrouter · free coding";
   if (id.startsWith("deepseek:")) return "deepseek · coding";
   if (id.startsWith("groq:")) return "groq · fast coding";
-  if (id.startsWith("gemini:")) return "gemini · reasoning";
+  if (id.startsWith("gemini:")) return "gemini · free coding";
   if (id.startsWith("cerebras:")) return "cerebras · fastest";
   if (id.startsWith("mistral:")) return "mistral · codestral";
   return MODEL_HINTS[id];

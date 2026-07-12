@@ -53,13 +53,16 @@ export const PROVIDER_CATALOG: Record<string, CatalogProvider> = {
       "HTTP-Referer": "https://github.com/IsaacForson/wright-IDE",
       "X-Title": "Wright",
     },
-    // Free :free variants that are actually strong at coding / agent reasoning.
+    // Live-checked against OpenRouter /models (free + tools, July 2026).
+    // DeepSeek :free removed; qwen3-coder:free hangs / retires Jul 19.
     suggestedModels: [
-      "qwen/qwen3-coder:free",
-      "deepseek/deepseek-chat-v3-0324:free",
-      "deepseek/deepseek-r1-0528:free",
+      "poolside/laguna-m.1:free",
+      "openai/gpt-oss-120b:free",
+      "nvidia/nemotron-3-super-120b-a12b:free",
+      "cohere/north-mini-code:free",
+      "openrouter/free",
     ],
-    signupHint: "Free key at openrouter.ai — curated :free coding models (Qwen3-Coder, DeepSeek)",
+    signupHint: "Free key at openrouter.ai — Laguna / gpt-oss / Nemotron (DeepSeek & Qwen :free are dead/retiring)",
     pickerHint: "openrouter · free coding",
   },
   deepseek: {
@@ -85,9 +88,10 @@ export const PROVIDER_CATALOG: Record<string, CatalogProvider> = {
     name: "Google Gemini",
     baseUrl: "https://generativelanguage.googleapis.com/v1beta/openai",
     supportsTools: true,
-    suggestedModels: ["gemini-2.5-flash", "gemini-2.5-pro"],
-    signupHint: "Free key at aistudio.google.com — strongest free reasoning loop + huge context",
-    pickerHint: "gemini · reasoning",
+    // 2.5 Flash blocked for new users; 2.5 Pro paid-only (hangs on free keys).
+    suggestedModels: ["gemini-3.5-flash", "gemini-3.1-flash-lite", "gemini-3-flash-preview"],
+    signupHint: "Free key at aistudio.google.com — use 3.5 Flash / 3.1 Flash-Lite (2.5 blocked for new keys)",
+    pickerHint: "gemini · free coding",
   },
   cerebras: {
     id: "cerebras",

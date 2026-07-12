@@ -35,6 +35,33 @@ export interface CustomFallbackProvider {
   model: string;
 }
 
+/** OpenRouter :free slugs that 404, hang, or are retiring as of July 2026. */
+const DEAD_OPENROUTER_FREE = new Set([
+  "deepseek/deepseek-chat-v3-0324:free",
+  "deepseek/deepseek-r1-0528:free",
+  "deepseek/deepseek-r1:free",
+  "deepseek/deepseek-chat-v3:free",
+  "deepseek/deepseek-chat:free",
+  "qwen/qwen3-coder:free", // 0% uptime / hangs; retires Jul 19 2026
+  "qwen/qwen3-next-80b-a3b-instruct:free", // retires Jul 19 2026
+]);
+
+/** Gemini ids blocked for new users, paid-only, or shut down (July 2026). */
+const DEAD_GEMINI = new Set([
+  "gemini-2.5-flash", // "no longer available to new users"
+  "gemini-2.5-pro", // paid-only; free keys hang / fail
+  "gemini-2.5-flash-lite",
+  "gemini-2.0-flash",
+  "gemini-2.0-flash-lite",
+  "gemini-1.5-pro",
+  "gemini-1.5-flash",
+]);
+
+const DEAD_MODELS_BY_PROVIDER: Partial<Record<CloudProviderId, Set<string>>> = {
+  openrouter: DEAD_OPENROUTER_FREE,
+  gemini: DEAD_GEMINI,
+};
+
 /** Read enabled cloud providers with keys + model lists from settings. */
 export function getCloudProviders(): CloudProviderState[] {
   const cfg = vscode.workspace.getConfiguration("wright");
@@ -42,7 +69,16 @@ export function getCloudProviders(): CloudProviderState[] {
     const catalog = PROVIDER_CATALOG[id]!;
     const enabled = cfg.get<boolean>(`providers.${id}.enabled`) ?? true;
     const apiKey = cfg.get<string>(`providers.${id}.apiKey`)?.trim() || undefined;
-    const models = cfg.get<string[]>(`providers.${id}.models`)?.filter(Boolean) ?? catalog.suggestedModels;
+    let models = cfg.get<string[]>(`providers.${id}.models`)?.filter(Boolean) ?? [...catalog.suggestedModels];
+    const dead = DEAD_MODELS_BY_PROVIDER[id];
+    if (dead) {
+      const cleaned = models.filter((m) => !dead.has(m));
+      if (cleaned.length !== models.length) {
+        models = cleaned.length ? cleaned : [...catalog.suggestedModels];
+        // Persist migration so Manage models / picker stay in sync.
+        void cfg.update(`providers.${id}.models`, models, vscode.ConfigurationTarget.Global);
+      }
+    }
     return {
       id,
       name: catalog.name,
