@@ -16,6 +16,12 @@ export interface FileChange {
 export class TrackedHost implements WorkspaceHost {
   /** Original content per touched path; null = file did not exist. */
   private snapshots = new Map<string, string | null>();
+  /**
+   * Called just before a file is (over)written, with the path. Used by the
+   * checkpoint manager to capture pre-write state. Awaited so the read
+   * happens before the write lands.
+   */
+  onBeforeWrite?: (path: string) => Promise<void>;
 
   constructor(private readonly inner: WorkspaceHost) {}
 
@@ -46,6 +52,20 @@ export class TrackedHost implements WorkspaceHost {
     this.snapshots.clear();
   }
 
+  /** Drop tracked changes whose on-disk content now matches the original
+   *  (e.g. after a checkpoint restore rewinds files). */
+  async reconcile(): Promise<void> {
+    for (const [path, original] of [...this.snapshots.entries()]) {
+      let current: string | null;
+      try {
+        current = await this.inner.readFile(path);
+      } catch {
+        current = null;
+      }
+      if (current === original) this.snapshots.delete(path);
+    }
+  }
+
   /** Restore a file to its pre-agent state. */
   async revert(path: string): Promise<void> {
     if (!this.snapshots.has(path)) return;
@@ -73,6 +93,7 @@ export class TrackedHost implements WorkspaceHost {
   }
 
   async writeFile(path: string, content: string): Promise<void> {
+    if (this.onBeforeWrite) await this.onBeforeWrite(path);
     if (!this.snapshots.has(path)) {
       let original: string | null;
       try {

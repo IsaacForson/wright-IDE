@@ -862,6 +862,8 @@ export function App() {
                 streaming={busy && i === lastIndex && item.role === "assistant"}
                 images={item.images}
                 files={item.files}
+                checkpointId={item.checkpointId}
+                busy={busy}
               />
             );
           }
@@ -1286,10 +1288,25 @@ function TextMessage(props: {
   streaming: boolean;
   images?: string[];
   files?: string[];
+  checkpointId?: string;
+  busy?: boolean;
 }) {
   return (
     <div className={`message ${props.role}`}>
-      {props.role === "user" && <div className="message-role">You</div>}
+      {props.role === "user" && (
+        <div className="message-role">
+          <span>You</span>
+          {props.checkpointId && !props.busy && (
+            <button
+              className="restore-btn"
+              title="Restore — rewind files & chat to before this message"
+              onClick={() => post({ type: "restoreCheckpoint", id: props.checkpointId! })}
+            >
+              <Icon name="history" size={11} /> Restore
+            </button>
+          )}
+        </div>
+      )}
       {props.images && props.images.length > 0 && (
         <div className="message-images">
           {props.images.map((src, i) => <img key={i} src={src} alt="" />)}

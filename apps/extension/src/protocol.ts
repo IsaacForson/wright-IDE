@@ -33,6 +33,7 @@ export type WebviewToHost =
   | { type: "setApprovalMode"; mode: "manual" | "auto-edit" | "auto" }
   | { type: "queryFiles"; query: string; token: number }
   | { type: "planDecision"; usePlan: boolean }
+  | { type: "restoreCheckpoint"; id: string }
   | { type: "openFile"; path: string }
   | { type: "summarizeChat" }
   | { type: "askUserAnswer"; id: string; text: string }
@@ -65,7 +66,7 @@ export interface FileChangeItem {
 
 /** One entry in the rendered transcript. */
 export type UiItem =
-  | { kind: "text"; role: "user" | "assistant"; content: string; images?: string[]; files?: string[] }
+  | { kind: "text"; role: "user" | "assistant"; content: string; images?: string[]; files?: string[]; checkpointId?: string }
   | { kind: "thinking"; content: string; seconds: number }
   | { kind: "tool"; id: string; name: string; argsSummary: string; status: "running" | "ok" | "error" | "declined"; output?: string }
   /** A file being written live — code streams in as the model generates it. */

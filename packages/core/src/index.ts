@@ -7,6 +7,7 @@ export * from "./tokens.js";
 export * from "./tools.js";
 export * from "./edit.js";
 export * from "./track.js";
+export * from "./checkpoint.js";
 export * from "./agent.js";
 export * from "./prompts.js";
 export * from "./composer.js";

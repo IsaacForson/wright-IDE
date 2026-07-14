@@ -331,7 +331,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this.agentBuiltFor = undefined;
     // Changes stay on disk; starting a new chat just stops tracking them.
     this.tracker = undefined;
-    this.checkpoints = undefined;
     this.commandHost = undefined;
     this.liveCommandId = undefined;
     if (this.pendingPermission) {
@@ -346,29 +345,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this.sendState(false);
     // Reset webview-local UI (history overlay, mode picker) to match the fresh chat.
     this.post({ type: "chatCleared" });
-  }
-
-  /** Rewind the workspace + conversation to a per-turn checkpoint. */
-  private async restoreCheckpoint(id: string): Promise<void> {
-    if (!this.checkpoints || this.abort) {
-      if (this.abort) vscode.window.showInformationMessage("Wright: stop the current turn before restoring.");
-      return;
-    }
-    const truncateTo = await this.checkpoints.restore(id);
-    if (truncateTo === undefined) return;
-    this.items = this.items.slice(0, truncateTo);
-    await this.tracker?.reconcile();
-    // Rebuild the agent's context from the surviving text turns (tool calls
-    // are dropped, but the textual conversation is preserved).
-    this.savedMessages = this.items
-      .filter((i): i is Extract<UiItem, { kind: "text" }> => i.kind === "text")
-      .map((i) => ({ role: i.role, content: i.content }));
-    this.agent = undefined;
-    this.agentBuiltFor = undefined;
-    this.pendingPlan = undefined;
-    vscode.window.setStatusBarMessage("Wright: rewound to checkpoint", 4_000);
-    this.sendState(false);
-    this.sendChanges();
   }
 
   /** Toggle the chat-history overlay (driven by the native view-title button). */
@@ -497,7 +473,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     if (!this.commandHost) {
       this.rootPath ??= workspaceRoot()?.fsPath ?? os.homedir();
       this.ensureTracker(this.rootPath);
-      this.commandHost = new TerminalHost(this.tracker!, this.rootPath);
+      this.commandHost = new TerminalHost(this.tracker, this.rootPath);
       this.commandHost.target = this.commandRunTarget;
     }
 
@@ -704,9 +680,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         this.sendState(this.abort !== undefined);
         return;
       }
-      case "restoreCheckpoint":
-        await this.restoreCheckpoint(msg.id);
-        return;
       case "openFile": {
         const base = workspaceRoot()?.fsPath ?? this.rootPath ?? os.homedir();
         const rel = msg.path.replace(/\\/g, "/").replace(/^\.\//, "");
@@ -1051,22 +1024,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     qp.show();
   }
 
-  /**
-   * Resolve the model for this turn.
-   *  - An explicitly picked model is ALWAYS honored (only images override it,
-   *    since a non-vision model can't see them).
-   *  - On "auto", route by task shape to the cheapest capable tier:
-   *      images → vision · ask/small → fast · big/agent work → strong.
-   */
-  private resolveModel(mode: AgentMode, hasImages: boolean, big = false): string {
+  /** Resolve "auto" to a concrete model for this turn (Phase 10 routing). */
+  private resolveModel(mode: AgentMode, hasImages: boolean): string {
     const config = getConfig();
-    if (hasImages) return config.visionModel;
-    if (this.model !== "auto") return this.model; // explicit pick wins
-    const r = config.routing;
-    if (mode === "ask") return r.fast; // read-only Q&A → fast/cheap
-    if (mode === "multi" || big) return r.strong; // many/large tasks → strongest coder
-    if (mode === "debug") return r.strong; // debugging needs the good reasoner
-    return r.balanced; // default agent turn
+    if (hasImages) return config.visionModel; // local models here can't see images
+    if (this.model !== "auto") return this.model;
+    return mode === "ask" ? config.fastModel : config.chatModel;
   }
 
   private async handleQueryFiles(query: string, token: number): Promise<void> {
@@ -1182,7 +1145,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
     this.ensureTracker(this.rootPath);
     // Commands run in a visible "Wright" terminal (or sandbox); edits still go through the tracker.
-    this.commandHost = new TerminalHost(this.tracker!, this.rootPath);
+    this.commandHost = new TerminalHost(this.tracker, this.rootPath);
     this.commandHost.target = this.commandRunTarget;
     this.commandHost.onChunk = (text) => {
       if (!this.liveCommandId) return;
@@ -1436,8 +1399,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       return;
     }
 
-    // Open a restore point for this turn, before any edits land.
-    const checkpoint = this.checkpoints?.create(opts.displayText ?? text, this.items.length);
     if (!opts.skipUserItem) {
       this.items.push({
         kind: "text",
@@ -1445,7 +1406,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         content: opts.displayText ?? text,
         images: opts.images,
         files: opts.files?.map((f) => f.name),
-        checkpointId: checkpoint?.id,
       });
     }
     this.sendState(true);
