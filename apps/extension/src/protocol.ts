@@ -32,6 +32,7 @@ export type WebviewToHost =
   | { type: "setModel"; model: string }
   | { type: "setApprovalMode"; mode: "manual" | "auto-edit" | "auto" }
   | { type: "queryFiles"; query: string; token: number }
+  | { type: "queryWorkflows"; token: number }
   | { type: "planDecision"; usePlan: boolean }
   | { type: "restoreCheckpoint"; id: string }
   | { type: "secondOpinion" }
@@ -122,6 +123,7 @@ export type HostToWebview =
   | { type: "changes"; changes: FileChangeItem[] }
   | { type: "fileHunks"; path: string; hunks: Array<{ header: string; lines: string[] }> }
   | { type: "fileList"; token: number; entries: Array<{ path: string; type: "file" | "dir" }> }
+  | { type: "workflowList"; token: number; entries: Array<{ name: string; description: string }> }
   | { type: "sessions"; sessions: Array<{ id: string; title: string; updatedAt: number; current: boolean }> }
   | { type: "turnDone"; stats?: string }
   | { type: "contextUsage"; usage: number; enabled: boolean }

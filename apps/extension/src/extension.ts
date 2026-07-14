@@ -9,6 +9,7 @@ import { getConfig } from "./config.js";
 import { WrightSettingsPanel } from "./settingsPanel.js";
 import { UsageTracker } from "./usageTracker.js";
 import { WrightUsagePanel } from "./usagePanel.js";
+import { CodemapPanel } from "./codemapPanel.js";
 import { setUsageReporter } from "./providers.js";
 import {
   applyBuiltinChatVisibility,
@@ -31,6 +32,9 @@ export function activate(context: vscode.ExtensionContext): void {
     indexService,
     usage,
     vscode.commands.registerCommand("wright.usage", () => WrightUsagePanel.show(usage)),
+    vscode.commands.registerCommand("wright.memories", () => void chatProvider.manageMemories()),
+    vscode.commands.registerCommand("wright.newWorkflow", () => void chatProvider.newWorkflow()),
+    vscode.commands.registerCommand("wright.codemap", () => void CodemapPanel.show()),
     vscode.window.registerWebviewViewProvider(ChatViewProvider.viewType, chatProvider, {
       webviewOptions: { retainContextWhenHidden: true },
     }),

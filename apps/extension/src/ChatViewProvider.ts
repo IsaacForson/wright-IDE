@@ -18,6 +18,9 @@ import {
   createCodebaseSearchTool,
   createReadUrlTool,
   createWebSearchTool,
+  createRememberTool,
+  memoriesBlock,
+  type MemoryStore,
   executionMessage,
   executionMessageFromSteps,
   parsePlanSteps,
@@ -31,6 +34,8 @@ import { NodeWorkspaceHost, connectMcpServers, loadRulesFile, type McpConnection
 import { IndexService } from "./IndexService.js";
 import { createDiagnosticsTool } from "./diagnosticsTool.js";
 import { createGitHistoryTool } from "./gitHistoryTool.js";
+import { FileMemoryStore } from "./memoryStore.js";
+import { listWorkflows, expandWorkflow } from "./workflows.js";
 import { TerminalHost } from "./terminalHost.js";
 import { DEFAULT_MODEL_LIST, getConfig } from "./config.js";
 import { RECOMMENDED_LOCAL_MODELS, deleteModel, ensureOllamaRunning, listLocalModels, offerOllamaInstall, pullModel } from "./ollama.js";
@@ -121,6 +126,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private fileListCache: { entries: Array<{ path: string; type: "file" | "dir" }>; at: number } | undefined;
   /** Where the tracker/tools are rooted: the workspace, or ~ when none is open. */
   private rootPath: string | undefined;
+  /** Project memory store, created with the tracker. */
+  private memoryStore: MemoryStore = new FileMemoryStore(os.homedir());
   /** Installed Ollama models, refreshed opportunistically for the picker. */
   private localModels: string[] = [];
   /** A big-looking agent task parked while the user decides Plan vs Agent. */
@@ -460,6 +467,62 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this.sendState(false);
   }
 
+  /** View & prune project memories (Cursor/Windsurf-style Memories manager). */
+  async manageMemories(): Promise<void> {
+    const entries = await this.memoryStore.list();
+    if (entries.length === 0) {
+      vscode.window.showInformationMessage("Wright: no memories yet. The agent saves durable project facts as it learns them (stored in .wright/memories.json).");
+      return;
+    }
+    const trash = new vscode.ThemeIcon("trash");
+    const qp = vscode.window.createQuickPick();
+    qp.title = "Wright: project memories — 🗑 to forget one";
+    qp.items = entries.map((e) => ({ label: e.text, buttons: [{ iconPath: trash, tooltip: "Forget" }] }));
+    qp.onDidTriggerItemButton(async (ev) => {
+      const entry = entries.find((e) => e.text === ev.item.label);
+      if (entry) {
+        await this.memoryStore.remove(entry.id);
+        this.agentBuiltFor = undefined; // reload memories into the next agent
+        vscode.window.setStatusBarMessage("Wright: forgot a memory", 3_000);
+        void this.manageMemories();
+        qp.hide();
+      }
+    });
+    qp.onDidHide(() => qp.dispose());
+    qp.show();
+  }
+
+  /** Scaffold a new reusable workflow (.wright/workflows/<name>.md) and open it. */
+  async newWorkflow(): Promise<void> {
+    const root = this.rootPath ?? workspaceRoot()?.fsPath;
+    if (!root) {
+      vscode.window.showWarningMessage("Wright: open a folder to create a workflow.");
+      return;
+    }
+    const raw = await vscode.window.showInputBox({
+      title: "New Wright workflow",
+      prompt: "Name (used as /command in the composer)",
+      placeHolder: "e.g. add-endpoint",
+      validateInput: (v) => (/^[\w-]+$/.test(v.trim()) ? undefined : "Use letters, numbers, dashes only."),
+    });
+    const name = raw?.trim();
+    if (!name) return;
+    const dir = vscode.Uri.joinPath(vscode.Uri.file(root), ".wright", "workflows");
+    await vscode.workspace.fs.createDirectory(dir);
+    const file = vscode.Uri.joinPath(dir, `${name}.md`);
+    let exists = true;
+    try {
+      await vscode.workspace.fs.stat(file);
+    } catch {
+      exists = false;
+    }
+    if (!exists) {
+      const template = `# ${name}\n\nDescribe what this workflow does in one line above (shown in the / picker).\n\nSteps for the agent to follow:\n1. \n2. \n3. \n\nUse the run input (anything typed after /${name}) as the target of these steps.\n`;
+      await vscode.workspace.fs.writeFile(file, Buffer.from(template, "utf8"));
+    }
+    await vscode.window.showTextDocument(await vscode.workspace.openTextDocument(file));
+  }
+
   /** Toggle the chat-history overlay (driven by the native view-title button). */
   toggleHistory(): void {
     this.post({ type: "toggleHistory" });
@@ -708,7 +771,17 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         this.approvalMode = msg.mode;
         void vscode.workspace.getConfiguration("wright").update("approvalMode", msg.mode);
         return;
-      case "send":
+      case "send": {
+        // Reusable workflows: a leading /name expands into its saved recipe,
+        // while the transcript keeps showing the short command the user typed.
+        let workflowLabel: string | undefined;
+        if (msg.text.startsWith("/")) {
+          const expanded = await expandWorkflow(this.rootPath ?? workspaceRoot()?.fsPath ?? os.homedir(), msg.text);
+          if (expanded !== msg.text) {
+            workflowLabel = msg.text;
+            msg.text = expanded;
+          }
+        }
         if (this.pendingPlan && !msg.images?.length) {
           // Typing while a plan awaits approval = revision feedback.
           await this.handlePlan(this.pendingPlan.task, msg.text);
@@ -719,14 +792,15 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           // Big-task detection (agent mode only): offer to plan first.
           if (mode === "agent" && msg.mode === "agent" && !msg.images?.length && (await this.looksLikeBigTask(msg.text))) {
             this.pendingSuggest = { text: msg.text, images: msg.images, files: msg.files, research: msg.research };
-            this.items.push({ kind: "text", role: "user", content: msg.text, files: msg.files?.map((f) => f.name) });
+            this.items.push({ kind: "text", role: "user", content: workflowLabel ?? msg.text, files: msg.files?.map((f) => f.name) });
             this.post({ type: "planSuggest" });
             this.sendState(false);
             return;
           }
-          await this.handleSend(msg.text, { images: msg.images, files: msg.files, mode, research: msg.research });
+          await this.handleSend(msg.text, { displayText: workflowLabel, images: msg.images, files: msg.files, mode, research: msg.research });
         }
         return;
+      }
       case "openSettings":
         await vscode.commands.executeCommand("workbench.action.openSettings", "wright");
         return;
@@ -850,6 +924,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       }
       case "queryFiles":
         await this.handleQueryFiles(msg.query, msg.token);
+        return;
+      case "queryWorkflows":
+        this.post({ type: "workflowList", token: msg.token, entries: await listWorkflows(this.rootPath ?? workspaceRoot()?.fsPath ?? os.homedir()) });
         return;
       case "resolveDrops":
         await this.handleResolveDrops(msg.uris);
@@ -1304,6 +1381,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     tools.push(createReadUrlTool());
     tools.push(createDiagnosticsTool());
     tools.push(createGitHistoryTool(this.rootPath));
+    this.memoryStore = new FileMemoryStore(this.rootPath);
+    tools.push(createRememberTool(this.memoryStore));
     tools.push(
       createAskUserTool(async (payload, signal) => {
         const id = `ask${Date.now().toString(36)}`;
@@ -1328,6 +1407,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         "read_file",
         "list_dir",
         "git_history",
+        "remember",
         "search",
         "codebase_search",
         "web_search",
@@ -1339,6 +1419,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     }
     const rules = root ? await loadRulesFile(root.fsPath) : undefined;
     const userRules = config.userRules;
+    const memories = memoriesBlock(await this.memoryStore.list());
 
     // MCP tool servers (Phase 11), from wright.mcp.servers.
     if (!this.mcpAttempted) {
@@ -1380,7 +1461,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       // Deep research fans out into many search rounds; give it headroom.
       maxIterations: research === "deep" ? 60 : research === "research" ? 40 : 25,
       systemPrompt:
-        agentSystemPrompt({ workspaceName: vscode.workspace.name, rules, userRules, mode, research }) +
+        agentSystemPrompt({ workspaceName: vscode.workspace.name, rules, userRules, memories, mode, research }) +
         (root ? "" : NO_WORKSPACE_NOTE),
       approve: async (name, args) => {
         // Session trust from the in-chat permission card.

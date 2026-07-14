@@ -84,6 +84,19 @@
         "icon": "$(graph)"
       },
       {
+        "command": "wright.memories",
+        "title": "Wright: Project Memories"
+      },
+      {
+        "command": "wright.newWorkflow",
+        "title": "Wright: New Workflow"
+      },
+      {
+        "command": "wright.codemap",
+        "title": "Wright: Codemap (architecture view)",
+        "icon": "$(type-hierarchy)"
+      },
+      {
         "command": "wright.inlineEdit",
         "title": "Wright: Inline Edit (describe a change to the selection)"
       },

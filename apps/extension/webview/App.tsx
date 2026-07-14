@@ -258,6 +258,12 @@ interface MentionState {
   active: number;
 }
 
+interface SlashState {
+  query: string;
+  entries: Array<{ name: string; description: string }>;
+  active: number;
+}
+
 export function App() {
   const [items, setItems] = useState<UiItem[]>([]);
   const [changes, setChanges] = useState<Array<{ path: string; kind: "edited" | "created" }>>([]);
@@ -276,6 +282,7 @@ export function App() {
   const [pendingImages, setPendingImages] = useState<string[]>([]);
   const [pendingFiles, setPendingFiles] = useState<FileAttachment[]>([]);
   const [mention, setMention] = useState<MentionState | undefined>();
+  const [slash, setSlash] = useState<SlashState | undefined>();
   const [dragOver, setDragOver] = useState(false);
   const dragDepth = useRef(0);
   const [status, setStatus] = useState("Working");
@@ -333,6 +340,7 @@ export function App() {
   const scrollRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const mentionToken = useRef(0);
+  const slashToken = useRef(0);
   const turnStart = useRef(0);
   /** Apply the configured default mode once, without clobbering user changes. */
   const defaultModeApplied = useRef(false);
@@ -453,6 +461,11 @@ export function App() {
         case "fileList":
           if (msg.token === mentionToken.current) {
             setMention((m) => (m ? { ...m, entries: msg.entries, active: 0 } : m));
+          }
+          break;
+        case "workflowList":
+          if (msg.token === slashToken.current) {
+            setSlash((s) => (s ? { ...s, entries: msg.entries, active: 0 } : s));
           }
           break;
         case "assistantStart":
@@ -622,6 +635,30 @@ export function App() {
     });
   };
 
+  // ── /workflow picker (only when the input starts with a slash) ─────────
+
+  const updateSlash = useCallback((value: string) => {
+    const match = value.match(/^\/([\w-]*)$/);
+    if (!match) {
+      setSlash(undefined);
+      return;
+    }
+    const query = match[1] ?? "";
+    setSlash((s) => ({ query, entries: s ? s.entries : [], active: 0 }));
+    const token = ++slashToken.current;
+    post({ type: "queryWorkflows", token });
+  }, []);
+
+  const acceptSlash = (entry: { name: string; description: string }) => {
+    setInput("/" + entry.name + " ");
+    setSlash(undefined);
+    requestAnimationFrame(() => inputRef.current?.focus());
+  };
+
+  const slashMatches = slash
+    ? slash.entries.filter((e) => e.name.toLowerCase().startsWith(slash.query.toLowerCase()))
+    : [];
+
   // ── attachments ──────────────────────────────────────────────────────
 
   const addImageFile = (file: File) => {
@@ -721,6 +758,7 @@ export function App() {
     setPendingImages([]);
     setPendingFiles([]);
     setMention(undefined);
+    setSlash(undefined);
     setError(undefined);
     setStats(undefined);
     setStatus("Thinking");
@@ -753,6 +791,27 @@ export function App() {
       }
       if (e.key === "Escape") {
         setMention(undefined);
+        return;
+      }
+    }
+    if (slash && slashMatches.length > 0) {
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        setSlash({ ...slash, active: (slash.active + 1) % slashMatches.length });
+        return;
+      }
+      if (e.key === "ArrowUp") {
+        e.preventDefault();
+        setSlash({ ...slash, active: (slash.active - 1 + slashMatches.length) % slashMatches.length });
+        return;
+      }
+      if (e.key === "Enter" || e.key === "Tab") {
+        e.preventDefault();
+        acceptSlash(slashMatches[slash.active] ?? slashMatches[0]!);
+        return;
+      }
+      if (e.key === "Escape") {
+        setSlash(undefined);
         return;
       }
     }
@@ -835,6 +894,7 @@ export function App() {
             <div className="empty-sub">An agent that reads, edits, and runs your code.</div>
             <div className="empty-hints">
               <span><kbd>@</kbd> reference files</span>
+              <span><kbd>/</kbd> run a workflow</span>
               <span><kbd>⌘V</kbd> paste images</span>
               <span>drag files in</span>
             </div>
@@ -1056,6 +1116,23 @@ export function App() {
           {research !== "off" && <span className="research-note">answers grounded in live web sources</span>}
         </div>
 
+        {slash && slashMatches.length > 0 && (
+          <div className="mention-menu">
+            {slashMatches.map((entry, i) => (
+              <button
+                key={entry.name}
+                className={`mention-item${i === slash.active ? " active" : ""}`}
+                onMouseEnter={() => setSlash({ ...slash, active: i })}
+                onClick={() => acceptSlash(entry)}
+              >
+                <Icon name="sparkle" size={13} />
+                <span className="mention-name">/{entry.name}</span>
+                <span className="mention-path">{entry.description}</span>
+              </button>
+            ))}
+          </div>
+        )}
+
         {mention && mention.entries.length > 0 && (
           <div className="mention-menu">
             {mention.entries.map((entry, i) => (
@@ -1114,6 +1191,7 @@ export function App() {
             onChange={(e) => {
               setInput(e.target.value);
               updateMention(e.target.value, e.target.selectionStart ?? e.target.value.length);
+              updateSlash(e.target.value);
             }}
             onInput={resizeComposer}
             onKeyDown={onKeyDown}
