@@ -14,6 +14,8 @@ export interface WrightConfig {
   fastModel: string;
   embedModel: string;
   visionModel: string;
+  /** Auto-routing tiers: which model the "Auto" picker uses per task shape. */
+  routing: { fast: string; balanced: string; strong: string };
   webSearch: { provider: "tavily" | "brave" | "duckduckgo"; apiKey: string | undefined };
   approvalMode: ApprovalMode;
   /** Default stance for the in-chat permission card. */
@@ -71,6 +73,11 @@ export function getConfig(): WrightConfig {
     fastModel: cfg.get<string>("model.fast") || "meta/llama-3.1-8b-instruct",
     embedModel: cfg.get<string>("model.embed") || "nvidia/nv-embedcode-7b-v1",
     visionModel: cfg.get<string>("model.vision") || "meta/llama-4-maverick-17b-128e-instruct",
+    routing: {
+      fast: cfg.get<string>("routing.fast") || cfg.get<string>("model.fast") || "meta/llama-3.1-8b-instruct",
+      balanced: cfg.get<string>("routing.balanced") || cfg.get<string>("model.chat") || "z-ai/glm-5.2",
+      strong: cfg.get<string>("routing.strong") || "mistralai/mistral-large-3-675b-instruct-2512",
+    },
     webSearch: {
       provider: (cfg.get<string>("webSearch.provider") as "tavily" | "brave" | "duckduckgo") || "duckduckgo",
       apiKey: cfg.get<string>("webSearch.apiKey")?.trim() || undefined,

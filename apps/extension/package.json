@@ -366,6 +366,41 @@
             "meta/llama-3.2-90b-vision-instruct"
           ]
         },
+        "wright.routing.fast": {
+          "type": "string",
+          "default": "meta/llama-3.1-8b-instruct",
+          "markdownDescription": "**Auto** routing — model for light/read-only turns (Ask mode, small edits). Only used when the model picker is set to Auto; an explicitly picked model always wins.",
+          "enum": [
+            "meta/llama-3.1-8b-instruct",
+            "z-ai/glm-5.2",
+            "nvidia/nemotron-3-super-120b-a12b",
+            "meta/llama-3.3-70b-instruct"
+          ]
+        },
+        "wright.routing.balanced": {
+          "type": "string",
+          "default": "z-ai/glm-5.2",
+          "markdownDescription": "**Auto** routing — default model for normal agent turns.",
+          "enum": [
+            "z-ai/glm-5.2",
+            "mistralai/mistral-large-3-675b-instruct-2512",
+            "deepseek-ai/deepseek-v4-pro",
+            "moonshotai/kimi-k2.6",
+            "nvidia/nemotron-3-super-120b-a12b"
+          ]
+        },
+        "wright.routing.strong": {
+          "type": "string",
+          "default": "mistralai/mistral-large-3-675b-instruct-2512",
+          "markdownDescription": "**Auto** routing — model for big / multi-file / debug tasks. Strongest coder.",
+          "enum": [
+            "mistralai/mistral-large-3-675b-instruct-2512",
+            "z-ai/glm-5.2",
+            "deepseek-ai/deepseek-v4-pro",
+            "moonshotai/kimi-k2.6",
+            "qwen/qwen3.5-122b-a10b"
+          ]
+        },
         "wright.webSearch.provider": {
           "type": "string",
           "enum": [

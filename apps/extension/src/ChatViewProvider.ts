@@ -46,6 +46,18 @@ You are rooted at the user's HOME directory (~); all paths are relative to it. Y
 /** Virtual document scheme serving pre-edit snapshots for the diff editor. */
 export const ORIGINAL_SCHEME = "wright-original";
 
+/** Keyword signals for a "large" task (shared by big-task detection + auto-router). */
+const BIG_TASK_SIGNALS =
+  /(build|create|implement|design|make)\b.{0,40}\b(app|application|project|website|system|dashboard|platform|feature|page|screen)|entire|whole|full[- ]?(stack|project|app)|from scratch|multiple|several|redesign|overhaul/i;
+
+/** Cheap synchronous "is this a big task?" for model routing (no model call). */
+function isBigTaskHeuristic(text: string): boolean {
+  const words = text.trim().split(/\s+/).length;
+  if (words > 120) return true;
+  if (words < 12) return false;
+  return BIG_TASK_SIGNALS.test(text);
+}
+
 /** One persisted chat in workspaceState (30-day retention). */
 interface StoredSession {
   id: string;
@@ -751,7 +763,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           this.items.pop();
           await this.handlePlan(parked.text);
         } else {
-          await this.handleSend(parked.text, { ...parked, mode: "agent", skipUserItem: true });
+          // Already classified as a big task when we offered the plan.
+          await this.handleSend(parked.text, { ...parked, mode: "agent", skipUserItem: true, big: true });
         }
         return;
       }
@@ -955,9 +968,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private async looksLikeBigTask(text: string): Promise<boolean> {
     const words = text.trim().split(/\s+/).length;
     if (words < 12) return false;
-    const bigSignals = /(build|create|implement|design|make)\b.{0,40}\b(app|application|project|website|system|dashboard|platform|feature|page|screen)|entire|whole|full[- ]?(stack|project|app)|from scratch|multiple|several|redesign|overhaul/i;
     if (words > 120) return true;
-    if (!bigSignals.test(text)) return false;
+    if (!BIG_TASK_SIGNALS.test(text)) return false;
     const config = getConfig();
     if (!hasAnyCloudCredential()) return false;
     try {
@@ -1402,7 +1414,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
   private async handleSend(
     text: string,
-    opts: { displayText?: string; images?: string[]; files?: FileAttachment[]; mode?: AgentMode; research?: ResearchMode; skipUserItem?: boolean } = {},
+    opts: { displayText?: string; images?: string[]; files?: FileAttachment[]; mode?: AgentMode; research?: ResearchMode; skipUserItem?: boolean; big?: boolean } = {},
   ): Promise<void> {
     if (this.abort) return; // already running; UI disables send, but guard anyway
 
@@ -1418,7 +1430,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     const config = getConfig();
     const mode = opts.mode ?? "agent";
     const research = opts.research ?? "off";
-    const resolvedModel = this.resolveModel(mode, (opts.images?.length ?? 0) > 0);
+    // Cheap sync signal for the auto-router (no extra model call).
+    const big = opts.big ?? isBigTaskHeuristic(text);
+    const resolvedModel = this.resolveModel(mode, (opts.images?.length ?? 0) > 0, big);
     try {
       if (
         !this.agent ||
