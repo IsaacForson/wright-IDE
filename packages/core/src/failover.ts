@@ -16,12 +16,27 @@ export interface FailoverTarget {
   name: string;
 }
 
+/** Reports which target actually served a request, with its token usage. */
+export type UsageReporter = (info: { provider: string; model: string; inputTokens: number; outputTokens: number }) => void;
+
 export class FailoverModelClient extends ModelClient {
   constructor(
     private readonly targets: FailoverTarget[],
     private readonly onFailover?: (from: string, to: string) => void,
+    private readonly onUsage?: UsageReporter,
   ) {
     super(targets[0]!.client.providerConfig);
+  }
+
+  private report(i: number, usage?: { prompt_tokens: number; completion_tokens: number }): void {
+    if (!this.onUsage) return;
+    const t = this.targets[i]!;
+    this.onUsage({
+      provider: t.name,
+      model: t.model ?? "?",
+      inputTokens: usage?.prompt_tokens ?? 0,
+      outputTokens: usage?.completion_tokens ?? 0,
+    });
   }
 
   private mapReq(req: ChatRequest, i: number): ChatRequest {
@@ -39,7 +54,9 @@ export class FailoverModelClient extends ModelClient {
     let lastErr: unknown;
     for (let i = 0; i < this.targets.length; i++) {
       try {
-        return await this.targets[i]!.client.complete(this.mapReq(req, i), this.failoverOpts(opts, i));
+        const res = await this.targets[i]!.client.complete(this.mapReq(req, i), this.failoverOpts(opts, i));
+        this.report(i, res.usage);
+        return res;
       } catch (err) {
         lastErr = err;
         if (!this.shouldFailover(err, i, opts)) throw err;
@@ -56,7 +73,10 @@ export class FailoverModelClient extends ModelClient {
         const first = await iterator.next(); // errors before any output can fail over
         if (first.done) return;
         yield first.value;
-        yield* iterator;
+        for await (const ev of iterator) {
+          if (ev.type === "done") this.report(i, ev.result.usage);
+          yield ev;
+        }
         return;
       } catch (err) {
         lastErr = err;

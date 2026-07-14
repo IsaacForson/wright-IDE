@@ -7,6 +7,9 @@ import { BugWatcher } from "./bugWatcher.js";
 import { generateCommitMessage } from "./gitCommit.js";
 import { getConfig } from "./config.js";
 import { WrightSettingsPanel } from "./settingsPanel.js";
+import { UsageTracker } from "./usageTracker.js";
+import { WrightUsagePanel } from "./usagePanel.js";
+import { setUsageReporter } from "./providers.js";
 import {
   applyBuiltinChatVisibility,
   getShowBuiltinChat,
@@ -20,8 +23,14 @@ export function activate(context: vscode.ExtensionContext): void {
   const indexService = new IndexService(getConfig().embedModel);
   const chatProvider = new ChatViewProvider(context.extensionUri, indexService, context.workspaceState);
 
+  // Cross-provider usage tracking (attributed to the provider that served each request).
+  const usage = new UsageTracker(context.globalState);
+  setUsageReporter((i) => usage.record(i.provider, i.model, i.inputTokens, i.outputTokens));
+
   context.subscriptions.push(
     indexService,
+    usage,
+    vscode.commands.registerCommand("wright.usage", () => WrightUsagePanel.show(usage)),
     vscode.window.registerWebviewViewProvider(ChatViewProvider.viewType, chatProvider, {
       webviewOptions: { retainContextWhenHidden: true },
     }),

@@ -79,6 +79,11 @@
         "title": "Wright: Rebuild Codebase Index"
       },
       {
+        "command": "wright.usage",
+        "title": "Wright: Usage Dashboard",
+        "icon": "$(graph)"
+      },
+      {
         "command": "wright.inlineEdit",
         "title": "Wright: Inline Edit (describe a change to the selection)"
       },
@@ -126,9 +131,14 @@
           "group": "navigation@2"
         },
         {
-          "command": "wright.openSettings",
+          "command": "wright.usage",
           "when": "view == wright.chat",
           "group": "navigation@3"
+        },
+        {
+          "command": "wright.openSettings",
+          "when": "view == wright.chat",
+          "group": "navigation@4"
         }
       ],
       "scm/title": [
