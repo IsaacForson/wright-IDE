@@ -270,6 +270,7 @@ export function App() {
   const [mode, setMode] = useState<ChatMode>("agent");
   const [research, setResearch] = useState<ResearchMode>("off");
   const [planPending, setPlanPending] = useState(false);
+  const [planSteps, setPlanSteps] = useState<Array<{ text: string; include: boolean }>>([]);
   const [approvalMode, setApprovalMode] = useState<"manual" | "auto-edit" | "auto">("auto-edit");
   const [sessionStats, setSessionStats] = useState<string | undefined>();
   const [pendingImages, setPendingImages] = useState<string[]>([]);
@@ -434,6 +435,7 @@ export function App() {
           break;
         case "planReady":
           setPlanPending(true);
+          setPlanSteps(msg.steps.map((text) => ({ text, include: true })));
           break;
         case "planSuggest":
           setBusy(false);
@@ -864,6 +866,7 @@ export function App() {
                 files={item.files}
                 checkpointId={item.checkpointId}
                 busy={busy}
+                last={i === lastIndex && !busy}
               />
             );
           }
@@ -872,6 +875,9 @@ export function App() {
           }
           if (item.kind === "write") {
             return <WriteBlock key={item.id + i} item={item} />;
+          }
+          if (item.kind === "council") {
+            return <CouncilCard key={`co${i}`} item={item} />;
           }
           return item.name === "run_command"
             ? <CommandToolRow key={item.id + i} item={item} commandRunTarget={commandRunTarget} />
@@ -948,15 +954,58 @@ export function App() {
       )}
 
       {planPending && !busy && (
-        <div className="plan-bar">
-          <Icon name="book" size={14} />
-          <span className="plan-label">Plan ready</span>
-          <button className="btn primary" onClick={() => { setPlanPending(false); post({ type: "executePlan" }); }}>
-            <Icon name="send" size={12} /> Execute
-          </button>
-          <button className="btn" onClick={() => { setPlanPending(false); post({ type: "discardPlan" }); }}>
-            Discard
-          </button>
+        <div className="plan-review">
+          {planSteps.length > 0 && (
+            <div className="plan-steps">
+              <div className="plan-steps-head">Review & edit the plan — uncheck to skip, or edit any step</div>
+              {planSteps.map((s, i) => (
+                <div key={i} className={`plan-step${s.include ? "" : " excluded"}`}>
+                  <button
+                    className="plan-step-check"
+                    title={s.include ? "Skip this step" : "Include this step"}
+                    onClick={() => setPlanSteps((p) => p.map((x, j) => (j === i ? { ...x, include: !x.include } : x)))}
+                  >
+                    <Icon name={s.include ? "check" : "circle"} size={12} />
+                  </button>
+                  <input
+                    className="plan-step-text"
+                    value={s.text}
+                    onChange={(e) => setPlanSteps((p) => p.map((x, j) => (j === i ? { ...x, text: e.target.value } : x)))}
+                  />
+                  <button
+                    className="plan-step-del"
+                    title="Delete step"
+                    onClick={() => setPlanSteps((p) => p.filter((_, j) => j !== i))}
+                  >
+                    <Icon name="trash" size={11} />
+                  </button>
+                </div>
+              ))}
+              <button
+                className="plan-step-add"
+                onClick={() => setPlanSteps((p) => [...p, { text: "", include: true }])}
+              >
+                <Icon name="plus" size={11} /> Add step
+              </button>
+            </div>
+          )}
+          <div className="plan-bar">
+            <Icon name="book" size={14} />
+            <span className="plan-label">Plan ready</span>
+            <button
+              className="btn primary"
+              onClick={() => {
+                setPlanPending(false);
+                const steps = planSteps.filter((s) => s.include && s.text.trim()).map((s) => s.text.trim());
+                post({ type: "executePlan", steps });
+              }}
+            >
+              <Icon name="send" size={12} /> Execute
+            </button>
+            <button className="btn" onClick={() => { setPlanPending(false); post({ type: "discardPlan" }); }}>
+              Discard
+            </button>
+          </div>
         </div>
       )}
 
@@ -1290,6 +1339,7 @@ function TextMessage(props: {
   files?: string[];
   checkpointId?: string;
   busy?: boolean;
+  last?: boolean;
 }) {
   return (
     <div className={`message ${props.role}`}>
@@ -1323,7 +1373,34 @@ function TextMessage(props: {
       {props.role === "assistant" && !props.streaming && props.content && (
         <div className="message-actions">
           <MessageCopyButton text={props.content} />
+          {props.last && (
+            <button className="msg-action-btn" title="Ask another model the same question" onClick={() => post({ type: "secondOpinion" })}>
+              <Icon name="layers" size={11} /> Second opinion
+            </button>
+          )}
         </div>
+      )}
+    </div>
+  );
+}
+
+function CouncilCard({ item }: { item: Extract<UiItem, { kind: "council" }> }) {
+  return (
+    <div className="council-card">
+      <div className="council-head">
+        <Icon name="layers" size={12} />
+        <span>Second opinions</span>
+        {item.status === "running" && <Icon name="spinner" size={11} spin />}
+      </div>
+      {item.answers.map((a, i) => (
+        <div key={i} className="council-answer">
+          <div className="council-model">{a.label}</div>
+          <div className="council-text" dangerouslySetInnerHTML={{ __html: renderMarkdown(a.text) }} />
+          <div className="council-actions"><MessageCopyButton text={a.text} /></div>
+        </div>
+      ))}
+      {item.status === "running" && item.answers.length === 0 && (
+        <div className="council-answer"><div className="council-text" style={{ opacity: 0.6 }}>Consulting other models…</div></div>
       )}
     </div>
   );

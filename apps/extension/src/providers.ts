@@ -112,6 +112,30 @@ export function getReadyCloudProviders(): CloudProviderState[] {
   return getCloudProviders().filter((p) => p.enabled && !!p.apiKey);
 }
 
+/**
+ * Pick up to `n` DIVERSE model refs for a council/second-opinion, preferring
+ * different providers than `exclude`. Falls back to other NVIDIA models.
+ */
+export function pickCouncilModels(exclude: string, n = 2): string[] {
+  const config = getConfig();
+  const excludeProvider = parseModelRef(exclude === "auto" ? config.chatModel : exclude).providerId;
+  const picks: string[] = [];
+  // One strong model per OTHER ready cloud provider first (max diversity).
+  for (const p of getReadyCloudProviders()) {
+    if (p.id === excludeProvider || !p.models[0]) continue;
+    picks.push(formatModelRef(p.id, p.models[0]));
+  }
+  // Then other NVIDIA models (if NVIDIA isn't the excluded provider, or we still need more).
+  if (config.apiKeys.length) {
+    for (const m of config.modelList) {
+      if (picks.length >= n + 2) break;
+      const ref = m; // bare NIM id
+      if (ref !== exclude && !picks.includes(ref)) picks.push(ref);
+    }
+  }
+  return picks.slice(0, n);
+}
+
 export function getCustomFallbackProviders(): CustomFallbackProvider[] {
   const raw =
     vscode.workspace.getConfiguration("wright").get<CustomFallbackProvider[]>("fallback.providers") ?? [];
@@ -192,7 +216,7 @@ async function targetForOllama(model: string, requireUp: boolean): Promise<Failo
  */
 export async function buildFailoverClient(
   modelRef: string,
-  opts: { requireOllamaIfPrimary?: boolean } = {},
+  opts: { requireOllamaIfPrimary?: boolean; forceLocal?: boolean } = {},
 ): Promise<{ client: FailoverModelClient; agentModel: string; targets: FailoverTarget[] }> {
   const config = getConfig();
   const wcfg = vscode.workspace.getConfiguration("wright");
@@ -201,6 +225,19 @@ export async function buildFailoverClient(
   const ready = getReadyCloudProviders();
   const customs = getCustomFallbackProviders();
   const targets: FailoverTarget[] = [];
+
+  // Offline mode / privacy routing: local-only, no cloud in the chain.
+  if (opts.forceLocal) {
+    const localModel = modelRef.startsWith("ollama:") ? parseModelRef(modelRef).model : ollamaFallbackModel;
+    const local = await targetForOllama(localModel, true);
+    if (!local) {
+      throw new Error(
+        "Wright: local-only mode is on but Ollama isn't reachable. Install/start Ollama (ollama.com), or turn off Offline mode.",
+      );
+    }
+    const client = new FailoverModelClient([local], onFailoverStatus);
+    return { client, agentModel: localModel, targets: [local] };
+  }
 
   // Resolve "auto" to the configured NVIDIA chat model (bare id).
   const resolvedRef = modelRef === "auto" ? config.chatModel : modelRef;

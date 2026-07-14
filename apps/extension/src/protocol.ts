@@ -25,7 +25,7 @@ export type WebviewToHost =
   | { type: "openSettings" }
   | { type: "manageModels" }
   | { type: "manageLocalModels" }
-  | { type: "executePlan" }
+  | { type: "executePlan"; steps?: string[] }
   | { type: "discardPlan" }
   | { type: "stop" }
   | { type: "newChat" }
@@ -34,6 +34,7 @@ export type WebviewToHost =
   | { type: "queryFiles"; query: string; token: number }
   | { type: "planDecision"; usePlan: boolean }
   | { type: "restoreCheckpoint"; id: string }
+  | { type: "secondOpinion" }
   | { type: "openFile"; path: string }
   | { type: "summarizeChat" }
   | { type: "askUserAnswer"; id: string; text: string }
@@ -67,6 +68,7 @@ export interface FileChangeItem {
 /** One entry in the rendered transcript. */
 export type UiItem =
   | { kind: "text"; role: "user" | "assistant"; content: string; images?: string[]; files?: string[]; checkpointId?: string }
+  | { kind: "council"; status: "running" | "done"; question: string; answers: Array<{ label: string; text: string }> }
   | { kind: "thinking"; content: string; seconds: number }
   | { kind: "tool"; id: string; name: string; argsSummary: string; status: "running" | "ok" | "error" | "declined"; output?: string }
   /** A file being written live — code streams in as the model generates it. */
@@ -96,7 +98,7 @@ export type HostToWebview =
   | { type: "attachImage"; dataUrl: string }
   | { type: "toggleHistory" }
   | { type: "chatCleared" }
-  | { type: "planReady" }
+  | { type: "planReady"; steps: string[] }
   | { type: "planSuggest" }
   | { type: "assistantStart" }
   | { type: "delta"; text: string }

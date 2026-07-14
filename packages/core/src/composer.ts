@@ -73,3 +73,34 @@ Original task: ${task}
 
 ${plan}`;
 }
+
+/**
+ * Extract actionable steps from a plan's markdown — numbered or bulleted list
+ * items under (typically) a "Steps" heading. Falls back to all list items.
+ */
+export function parsePlanSteps(plan: string): string[] {
+  const lines = plan.split("\n");
+  const steps: string[] = [];
+  let inSteps = false;
+  for (const line of lines) {
+    if (/^#{1,4}\s|^\*\*/.test(line.trim())) {
+      inSteps = /steps/i.test(line);
+    }
+    const m = line.match(/^\s*(?:\d+[.)]|[-*•])\s+(.*\S)/);
+    if (m) steps.push(m[1]!.replace(/\*\*/g, "").trim());
+    else void inSteps;
+  }
+  // De-dupe and cap; if we somehow got nothing, return empty (caller keeps prose).
+  return [...new Set(steps)].slice(0, 40);
+}
+
+/** Build an execution message from a user-edited checklist of steps. */
+export function executionMessageFromSteps(task: string, steps: string[]): string {
+  const list = steps.map((s, i) => `${i + 1}. ${s}`).join("\n");
+  return `The user reviewed and approved this implementation checklist. Execute each step in order using your tools, then verify (build/tests) and fix any failures before finishing. Do only what these steps describe.
+
+Original task: ${task}
+
+Steps:
+${list}`;
+}

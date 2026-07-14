@@ -3,6 +3,7 @@ import { ChatViewProvider, ORIGINAL_SCHEME } from "./ChatViewProvider.js";
 import { IndexService } from "./IndexService.js";
 import { PROPOSED_SCHEME, inlineEdit, proposedContentProvider } from "./inlineEdit.js";
 import { WrightCompletionProvider } from "./autocomplete.js";
+import { BugWatcher } from "./bugWatcher.js";
 import { generateCommitMessage } from "./gitCommit.js";
 import { getConfig } from "./config.js";
 import { WrightSettingsPanel } from "./settingsPanel.js";
@@ -42,6 +43,7 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand("wright.explainSelection", () => void chatProvider.runSelectionAction("explain")),
     vscode.commands.registerCommand("wright.reviewSelection", () => void chatProvider.runSelectionAction("review")),
     vscode.languages.registerInlineCompletionItemProvider({ pattern: "**" }, new WrightCompletionProvider()),
+    new BugWatcher(),
     // If Wright is disabled/uninstalled, never leave built-in chat hidden.
     {
       dispose: () => {

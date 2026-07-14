@@ -170,6 +170,27 @@
     "configuration": {
       "title": "Wright",
       "properties": {
+        "wright.offlineMode": {
+          "type": "boolean",
+          "default": false,
+          "markdownDescription": "**Offline mode** — run everything on your local Ollama model, no cloud calls. Works with no internet and never uses your API quota. Requires Ollama installed."
+        },
+        "wright.privacy.sensitiveGlobs": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": [],
+          "markdownDescription": "**Privacy routing** — glob patterns (e.g. `**/secrets/**`, `*.env`, `packages/private/**`). When a chat turn attaches or @-mentions a matching file, that turn is forced to your **local** model and never sent to any cloud provider."
+        },
+        "wright.bugWatcher.enabled": {
+          "type": "boolean",
+          "default": false,
+          "markdownDescription": "**Ambient bug-watcher** — after each manual save, your **local** model quietly scans the file for likely bugs and shows them as gentle 'Wright' hints in the Problems panel. Free (local only), never uses cloud quota. Requires Ollama."
+        },
+        "wright.bugWatcher.model": {
+          "type": "string",
+          "default": "qwen2.5-coder:14b",
+          "description": "Local Ollama model used by the ambient bug-watcher."
+        },
         "wright.nvidia.apiKey": {
           "type": "string",
           "default": "",

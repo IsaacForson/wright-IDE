@@ -19,6 +19,8 @@ import {
   createReadUrlTool,
   createWebSearchTool,
   executionMessage,
+  executionMessageFromSteps,
+  parsePlanSteps,
   formatModelRef,
   generatePlan,
   nvidiaProvider,
@@ -28,10 +30,11 @@ import {
 import { NodeWorkspaceHost, connectMcpServers, loadRulesFile, type McpConnection, type McpServerConfig } from "@wright/core/node";
 import { IndexService } from "./IndexService.js";
 import { createDiagnosticsTool } from "./diagnosticsTool.js";
+import { createGitHistoryTool } from "./gitHistoryTool.js";
 import { TerminalHost } from "./terminalHost.js";
 import { DEFAULT_MODEL_LIST, getConfig } from "./config.js";
 import { RECOMMENDED_LOCAL_MODELS, deleteModel, ensureOllamaRunning, listLocalModels, offerOllamaInstall, pullModel } from "./ollama.js";
-import { buildFailoverClient, buildPickerModels, getCloudProviders, hasAnyCloudCredential } from "./providers.js";
+import { buildFailoverClient, buildPickerModels, getCloudProviders, hasAnyCloudCredential, pickCouncilModels } from "./providers.js";
 import { getActiveFile, workspaceRoot } from "./workspace.js";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -50,12 +53,35 @@ export const ORIGINAL_SCHEME = "wright-original";
 const BIG_TASK_SIGNALS =
   /(build|create|implement|design|make)\b.{0,40}\b(app|application|project|website|system|dashboard|platform|feature|page|screen)|entire|whole|full[- ]?(stack|project|app)|from scratch|multiple|several|redesign|overhaul/i;
 
+/** Short display name for a model ref (`groq:llama-3.3-70b` → "llama-3.3-70b"). */
+function modelShortLabel(ref: string): string {
+  const afterProvider = ref.includes(":") ? ref.slice(ref.indexOf(":") + 1) : ref;
+  return afterProvider.split("/").pop() ?? afterProvider;
+}
+
 /** Cheap synchronous "is this a big task?" for model routing (no model call). */
 function isBigTaskHeuristic(text: string): boolean {
   const words = text.trim().split(/\s+/).length;
   if (words > 120) return true;
   if (words < 12) return false;
   return BIG_TASK_SIGNALS.test(text);
+}
+
+/** Does any path in this turn (attachments or @-mentions) match a sensitive glob? */
+function turnTouchesSensitiveImpl(text: string, files: string[], globs: string[]): boolean {
+  if (globs.length === 0) return false;
+  const res = globs.map((g) => {
+    const rx = g
+      .replace(/[.+^${}()|[\]\\]/g, "\\$&")
+      .replace(/\*\*/g, " ")
+      .replace(/\*/g, "[^/]*")
+      .replace(/ /g, ".*")
+      .replace(/\?/g, ".");
+    return new RegExp(`(^|/)${rx}$|^${rx}$`, "i");
+  });
+  const mentions = [...text.matchAll(/@([\w./\-]+)/g)].map((m) => m[1]!.replace(/\/$/, ""));
+  const candidates = [...files, ...mentions];
+  return candidates.some((p) => res.some((rx) => rx.test(p) || rx.test(p.split("/").pop() ?? p)));
 }
 
 /** One persisted chat in workspaceState (30-day retention). */
@@ -90,7 +116,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private mcp: McpConnection | undefined;
   private mcpAttempted = false;
   /** What the current agent was built for; a mismatch forces a rebuild. */
-  private agentBuiltFor: { model: string; mode: AgentMode; research: ResearchMode } | undefined;
+  private agentBuiltFor: { model: string; mode: AgentMode; research: ResearchMode; forceLocal: boolean } | undefined;
   /** Cached workspace file list for the @-mention picker. */
   private fileListCache: { entries: Array<{ path: string; type: "file" | "dir" }>; at: number } | undefined;
   /** Where the tracker/tools are rooted: the workspace, or ~ when none is open. */
@@ -381,6 +407,57 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     vscode.window.setStatusBarMessage("Wright: rewound to checkpoint", 4_000);
     this.sendState(false);
     this.sendChanges();
+  }
+
+  /**
+   * Model Council: ask 1-2 OTHER models the same question as the last turn
+   * and show their answers beside the original for comparison. Chat-only
+   * (no tools/edits) — a second opinion, not a parallel agent run.
+   */
+  private async runSecondOpinion(): Promise<void> {
+    if (this.abort) return;
+    const history = this.agent ? [...this.agent.history] : (this.savedMessages ?? []);
+    // Drop trailing assistant turn(s) so the alternates answer the same prompt.
+    const msgs = [...history];
+    while (msgs.length && msgs.at(-1)!.role !== "user") msgs.pop();
+    if (msgs.length === 0) {
+      vscode.window.showInformationMessage("Wright: nothing to get a second opinion on yet.");
+      return;
+    }
+    const lastUser = msgs.at(-1);
+    const question = typeof lastUser?.content === "string" ? lastUser.content.slice(0, 100) : "the last question";
+    const refs = pickCouncilModels(this.model, 2);
+    if (refs.length === 0) {
+      vscode.window.showInformationMessage("Wright: add a second provider/model to compare against (Settings → Providers).");
+      return;
+    }
+
+    const councilItem: Extract<UiItem, { kind: "council" }> = { kind: "council", status: "running", question, answers: [] };
+    this.items.push(councilItem);
+    this.sendState(true);
+
+    const results = await Promise.all(
+      refs.map(async (ref) => {
+        try {
+          const { client, agentModel } = await buildFailoverClient(ref, { forceLocal: getConfig().offlineMode });
+          const res = await client.complete({
+            model: agentModel,
+            messages: [
+              { role: "system", content: "You are a senior engineer giving a concise second opinion. Answer the user's last question directly; note if you'd approach it differently." },
+              ...msgs.filter((m) => m.role === "user" || m.role === "assistant"),
+            ],
+            max_tokens: 2_048,
+          });
+          return { label: modelShortLabel(ref), text: res.message.content ?? "(no answer)" };
+        } catch (err) {
+          return { label: modelShortLabel(ref), text: `⚠︎ ${err instanceof Error ? err.message : String(err)}` };
+        }
+      }),
+    );
+    councilItem.answers = results;
+    councilItem.status = "done";
+    this.persistSession();
+    this.sendState(false);
   }
 
   /** Toggle the chat-history overlay (driven by the native view-title button). */
@@ -719,6 +796,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       case "restoreCheckpoint":
         await this.restoreCheckpoint(msg.id);
         return;
+      case "secondOpinion":
+        await this.runSecondOpinion();
+        return;
       case "openFile": {
         const base = workspaceRoot()?.fsPath ?? this.rootPath ?? os.homedir();
         const rel = msg.path.replace(/\\/g, "/").replace(/^\.\//, "");
@@ -781,7 +861,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         const pending = this.pendingPlan;
         this.pendingPlan = undefined;
         this.sendState(false);
-        if (pending) await this.handleSend(executionMessage(pending.task, pending.plan), { displayText: "▶ Execute plan" });
+        if (!pending) return;
+        // Use the user's edited checklist when provided; else the raw plan.
+        const message =
+          msg.steps && msg.steps.length > 0
+            ? executionMessageFromSteps(pending.task, msg.steps)
+            : executionMessage(pending.task, pending.plan);
+        await this.handleSend(message, { displayText: "▶ Execute plan" });
         return;
       }
       case "discardPlan":
@@ -1063,6 +1149,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     qp.show();
   }
 
+  private turnTouchesSensitive(text: string, files: FileAttachment[] | undefined, globs: string[]): boolean {
+    return turnTouchesSensitiveImpl(text, (files ?? []).map((f) => f.path ?? f.name), globs);
+  }
+
   /**
    * Resolve the model for this turn.
    *  - An explicitly picked model is ALWAYS honored (only images override it,
@@ -1175,7 +1265,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     }
   }
 
-  private async buildAgent(_apiKey: string, model: string, mode: AgentMode, research: ResearchMode): Promise<Agent> {
+  private async buildAgent(_apiKey: string, model: string, mode: AgentMode, research: ResearchMode, forceLocal = false): Promise<Agent> {
     const root = workspaceRoot();
     // No folder open? Root the agent at the home directory so it can still
     // read the filesystem and scaffold brand-new projects anywhere under ~.
@@ -1184,7 +1274,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
     let failover;
     try {
-      failover = await buildFailoverClient(model, { requireOllamaIfPrimary: true });
+      failover = await buildFailoverClient(model, { requireOllamaIfPrimary: true, forceLocal });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       if (msg.includes("Ollama isn't reachable")) void offerOllamaInstall();
@@ -1213,6 +1303,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     tools.push(createWebSearchTool(config.webSearch));
     tools.push(createReadUrlTool());
     tools.push(createDiagnosticsTool());
+    tools.push(createGitHistoryTool(this.rootPath));
     tools.push(
       createAskUserTool(async (payload, signal) => {
         const id = `ask${Date.now().toString(36)}`;
@@ -1236,6 +1327,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       const readOnly = new Set([
         "read_file",
         "list_dir",
+        "git_history",
         "search",
         "codebase_search",
         "web_search",
@@ -1398,7 +1490,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       );
       this.pendingPlan = { task, plan };
       this.post({ type: "turnDone" });
-      this.post({ type: "planReady" });
+      this.post({ type: "planReady", steps: parsePlanSteps(plan) });
     } catch (err) {
       if (err instanceof ModelError && err.kind === "aborted") {
         this.post({ type: "turnDone", stats: "cancelled" });
@@ -1433,17 +1525,23 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     // Cheap sync signal for the auto-router (no extra model call).
     const big = opts.big ?? isBigTaskHeuristic(text);
     const resolvedModel = this.resolveModel(mode, (opts.images?.length ?? 0) > 0, big);
+    // Local-only when offline mode is on, or the turn touches a sensitive path.
+    const forceLocal = config.offlineMode || this.turnTouchesSensitive(text, opts.files, config.sensitiveGlobs);
+    if (forceLocal && !config.offlineMode) {
+      this.items.push({ kind: "text", role: "assistant", content: "_🔒 Sensitive path involved — using your local model only (not sent to any cloud)._" });
+    }
     try {
       if (
         !this.agent ||
         this.agentBuiltFor?.model !== resolvedModel ||
         this.agentBuiltFor.mode !== mode ||
-        this.agentBuiltFor.research !== research
+        this.agentBuiltFor.research !== research ||
+        this.agentBuiltFor.forceLocal !== forceLocal
       ) {
         // Carry the conversation across model/mode/research switches.
         if (this.agent) this.savedMessages = [...this.agent.history];
-        this.agent = await this.buildAgent(config.apiKey ?? "", resolvedModel, mode, research);
-        this.agentBuiltFor = { model: resolvedModel, mode, research };
+        this.agent = await this.buildAgent(config.apiKey ?? "", resolvedModel, mode, research, forceLocal);
+        this.agentBuiltFor = { model: resolvedModel, mode, research, forceLocal };
       }
     } catch (err) {
       this.post({ type: "error", message: err instanceof Error ? err.message : String(err) });
@@ -1465,6 +1563,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this.sendState(true);
     text = await this.expandMentions(text);
     text = await this.expandAttachments(text, opts.files);
+    // Screenshot-to-fix: guide the vision model to locate & fix the shown UI.
+    if ((opts.images?.length ?? 0) > 0 && mode !== "ask") {
+      text +=
+        "\n\n[The image(s) above are from this project's UI. If they show a bug or a mockup, first use search / codebase_search to find the responsible component(s) in the codebase, then make the change and verify. Don't guess the file — locate it.]";
+    }
 
     this.abort = new AbortController();
     const start = Date.now();

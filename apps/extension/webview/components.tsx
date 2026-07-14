@@ -71,6 +71,7 @@ const ICON_PATHS: Record<string, ReactNode> = {
   compass: <path d="M8 14A6 6 0 1 0 8 2a6 6 0 0 0 0 12Zm2.6-8.6L9.2 9.2 5.4 10.6l1.4-3.8 3.8-1.4Z" />,
   telescope: <path d="m2.5 10.5 8-6 2 3-8 6-2-3Zm7-6.5 1.2-.7 1.6 2.6-1.2.7M6 9l2 4M5 13h3M10.5 4.2l1-1.5" />,
   slash: <path d="M8 14A6 6 0 1 0 8 2a6 6 0 0 0 0 12Zm-4-2 8-8" />,
+  circle: <circle cx="8" cy="8" r="5.5" />,
   more: (
     <>
       <circle cx="3.5" cy="8" r="1.1" fill="currentColor" stroke="none" />

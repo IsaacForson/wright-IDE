@@ -34,6 +34,10 @@ export interface WrightConfig {
   userRules?: string;
   /** Always ask before delete-like shell commands. */
   requireDeleteApproval: boolean;
+  /** Force every request to the local model — no cloud, works offline. */
+  offlineMode: boolean;
+  /** Globs whose involvement forces local-only routing (never sent to cloud). */
+  sensitiveGlobs: string[];
 }
 
 export const DEFAULT_MODEL_LIST = [
@@ -92,6 +96,8 @@ export function getConfig(): WrightConfig {
     autoKeep: cfg.get<boolean>("edits.autoKeep") ?? false,
     userRules: composeUserRules(cfg),
     requireDeleteApproval: cfg.get<boolean>("rules.requireDeleteApproval") ?? true,
+    offlineMode: cfg.get<boolean>("offlineMode") ?? false,
+    sensitiveGlobs: cfg.get<string[]>("privacy.sensitiveGlobs")?.filter(Boolean) ?? [],
   };
 }
 

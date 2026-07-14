@@ -1741,6 +1741,164 @@ body.vscode-light .research-pill.research-deep {
   opacity: 1;
 }
 
+.msg-action-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border: none;
+  background: transparent;
+  color: var(--vscode-foreground);
+  opacity: 0.7;
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+  padding: 0 4px;
+}
+
+.msg-action-btn:hover {
+  opacity: 1;
+  color: var(--w-accent);
+}
+
+/* ── editable plan checklist ── */
+
+.plan-review {
+  border-top: 1px solid var(--w-border-soft);
+}
+
+.plan-steps {
+  max-height: 260px;
+  overflow-y: auto;
+  padding: 8px 10px 4px;
+}
+
+.plan-steps-head {
+  font-size: 11px;
+  opacity: 0.6;
+  margin-bottom: 6px;
+}
+
+.plan-step {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 4px;
+}
+
+.plan-step.excluded .plan-step-text {
+  opacity: 0.4;
+  text-decoration: line-through;
+}
+
+.plan-step-check {
+  flex: none;
+  border: none;
+  background: none;
+  color: var(--w-accent);
+  cursor: pointer;
+  padding: 2px;
+  display: flex;
+}
+
+.plan-step.excluded .plan-step-check {
+  color: var(--vscode-foreground);
+  opacity: 0.4;
+}
+
+.plan-step-text {
+  flex: 1;
+  min-width: 0;
+  border: 1px solid transparent;
+  border-radius: var(--w-radius);
+  background: var(--w-surface);
+  color: var(--vscode-input-foreground);
+  font: inherit;
+  font-size: 12px;
+  padding: 4px 8px;
+}
+
+.plan-step-text:focus {
+  outline: none;
+  border-color: var(--w-accent);
+}
+
+.plan-step-del {
+  flex: none;
+  border: none;
+  background: none;
+  color: var(--vscode-foreground);
+  opacity: 0.45;
+  cursor: pointer;
+  padding: 2px;
+  display: flex;
+}
+
+.plan-step-del:hover {
+  opacity: 1;
+  color: var(--w-err);
+}
+
+.plan-step-add {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border: none;
+  background: none;
+  color: var(--w-accent);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+  padding: 4px 2px 2px;
+}
+
+/* ── Model Council ── */
+
+.council-card {
+  margin: 4px 0 12px;
+  border: 1px solid color-mix(in srgb, var(--w-accent) 30%, var(--w-border));
+  border-radius: var(--w-radius-lg);
+  overflow: hidden;
+}
+
+.council-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 6px 10px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  opacity: 0.7;
+  background: var(--w-surface);
+  border-bottom: 1px solid var(--w-border-soft);
+}
+
+.council-answer {
+  padding: 8px 11px;
+  border-bottom: 1px solid var(--w-border-soft);
+}
+
+.council-answer:last-child {
+  border-bottom: none;
+}
+
+.council-model {
+  font-family: var(--w-mono);
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--vscode-textLink-foreground);
+  margin-bottom: 4px;
+}
+
+.council-text {
+  font-size: 12.5px;
+}
+
+.council-actions {
+  margin-top: 4px;
+}
+
 .message-copy {
   display: inline-flex;
   align-items: center;
