@@ -1862,6 +1862,23 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       text +=
         "\n\n[The image(s) above are from this project's UI. If they show a bug or a mockup, first use search / codebase_search to find the responsible component(s) in the codebase, then make the change and verify. Don't guess the file — locate it.]";
     }
+    // Agent to-dos (Cursor-style): a BIG plan-less agent task gets the same
+    // deterministic completion signal as plan mode — the agent maintains a
+    // checklist file, and "all boxes ticked" is what ends auto-continue.
+    if (big && mode === "agent" && !this.planFileActive && !opts.skipUserItem) {
+      const root = this.rootPath ?? workspaceRoot()?.fsPath;
+      if (root) {
+        const now = new Date();
+        const rel = `.wright/plans/${planSlug(text, now)}.md`;
+        this.currentPlanUri = vscode.Uri.joinPath(vscode.Uri.file(root), rel);
+        this.currentPlanRel = rel;
+        this.planFileActive = true;
+        text +=
+          `\n\n[Multi-step task. FIRST create a checklist file at ${rel} using write_file: a "# <short title>" line, then a "## Steps" section listing every step you intend to do as "- [ ] **n.** step". ` +
+          `Then do the work, ticking each step to "- [x]" with edit_file immediately after completing it. ` +
+          `When every box is ticked and the result is verified, give your final summary and STOP.]`;
+      }
+    }
 
     this.abort = new AbortController();
     const start = Date.now();
