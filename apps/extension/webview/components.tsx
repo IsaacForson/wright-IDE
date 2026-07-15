@@ -81,7 +81,60 @@ const ICON_PATHS: Record<string, ReactNode> = {
   ),
 };
 
+/**
+ * Wright icon names → VS Code codicon glyphs (the editor's real icon font).
+ * Names not in this map fall back to the legacy inline SVG above.
+ */
+const CODICON_MAP: Record<string, string> = {
+  send: "arrow-up",
+  stop: "debug-stop",
+  chevron: "chevron-down",
+  file: "file",
+  folder: "folder",
+  search: "search",
+  terminal: "terminal",
+  pencil: "edit",
+  globe: "globe",
+  check: "check",
+  x: "close",
+  spinner: "loading",
+  plus: "add",
+  undo: "discard",
+  diff: "diff",
+  robot: "hubot",
+  notebook: "notebook",
+  bug2: "bug",
+  chat: "comment-discussion",
+  checklist: "checklist",
+  book: "book",
+  bug: "bug",
+  layers: "layers",
+  question: "question",
+  sparkle: "sparkle",
+  cloud: "cloud",
+  image: "file-media",
+  gear: "gear",
+  history: "history",
+  trash: "trash",
+  copy: "copy",
+  compass: "compass",
+  telescope: "telescope",
+  slash: "circle-slash",
+  circle: "circle-large-outline",
+  more: "ellipsis",
+};
+
 export function Icon({ name, size = 14, spin = false }: { name: string; size?: number; spin?: boolean }) {
+  const codicon = CODICON_MAP[name];
+  if (codicon) {
+    return (
+      <i
+        className={`icon codicon codicon-${codicon}${spin ? " codicon-modifier-spin" : ""}`}
+        style={{ fontSize: size }}
+        aria-hidden
+      />
+    );
+  }
   return (
     <svg
       className={spin ? "icon spin" : "icon"}
@@ -98,6 +151,94 @@ export function Icon({ name, size = 14, spin = false }: { name: string; size?: n
       {ICON_PATHS[name] ?? ICON_PATHS.file}
     </svg>
   );
+}
+
+/**
+ * Colored per-language file icons — small branded glyphs like an editor's
+ * file explorer. Keyed by extension; unknown types fall back to a neutral
+ * file glyph tinted by the theme.
+ */
+const FILE_ICON_COLORS: Record<string, { bg: string; label: string; fg?: string }> = {
+  js: { bg: "#f7df1e", label: "JS", fg: "#111" },
+  mjs: { bg: "#f7df1e", label: "JS", fg: "#111" },
+  cjs: { bg: "#f7df1e", label: "JS", fg: "#111" },
+  ts: { bg: "#3178c6", label: "TS", fg: "#fff" },
+  mts: { bg: "#3178c6", label: "TS", fg: "#fff" },
+  json: { bg: "#8a8a3d", label: "{}", fg: "#fff" },
+  md: { bg: "#4a80bd", label: "M↓", fg: "#fff" },
+  py: { bg: "#3776ab", label: "Py", fg: "#ffd43b" },
+  rb: { bg: "#cc342d", label: "Rb", fg: "#fff" },
+  go: { bg: "#00add8", label: "Go", fg: "#fff" },
+  rs: { bg: "#ce6d29", label: "Rs", fg: "#fff" },
+  java: { bg: "#e76f00", label: "J", fg: "#fff" },
+  php: { bg: "#777bb3", label: "php", fg: "#fff" },
+  sh: { bg: "#4d5a66", label: ">_", fg: "#a6e22e" },
+  yml: { bg: "#a4373a", label: "Y", fg: "#fff" },
+  yaml: { bg: "#a4373a", label: "Y", fg: "#fff" },
+  toml: { bg: "#9c4221", label: "T", fg: "#fff" },
+  sql: { bg: "#336791", label: "SQL", fg: "#fff" },
+  prisma: { bg: "#0c344b", label: "◭", fg: "#5fd3f3" },
+  env: { bg: "#3d4a3d", label: "⚙", fg: "#ecd53f" },
+  svg: { bg: "#ffb13b", label: "◠", fg: "#111" },
+  css: { bg: "#264de4", label: "#", fg: "#fff" },
+  scss: { bg: "#cf649a", label: "S", fg: "#fff" },
+  vue: { bg: "#42b883", label: "V", fg: "#fff" },
+  svelte: { bg: "#ff3e00", label: "S", fg: "#fff" },
+};
+
+function extOf(path: string): string {
+  const base = path.split("/").pop() ?? path;
+  if (base.startsWith(".env")) return "env";
+  const i = base.lastIndexOf(".");
+  return i === -1 ? "" : base.slice(i + 1).toLowerCase();
+}
+
+export function FileIcon({ path, size = 14 }: { path: string; size?: number }) {
+  const ext = extOf(path);
+  // React / JSX: the atom mark, cyan on dark navy.
+  if (ext === "jsx" || ext === "tsx") {
+    return (
+      <svg className="file-icon" width={size} height={size} viewBox="0 0 16 16" aria-hidden>
+        <rect width="16" height="16" rx="3" fill="#1b2b34" />
+        <circle cx="8" cy="8" r="1.4" fill="#61dafb" />
+        <g fill="none" stroke="#61dafb" strokeWidth="0.9">
+          <ellipse cx="8" cy="8" rx="5.4" ry="2.2" />
+          <ellipse cx="8" cy="8" rx="5.4" ry="2.2" transform="rotate(60 8 8)" />
+          <ellipse cx="8" cy="8" rx="5.4" ry="2.2" transform="rotate(120 8 8)" />
+        </g>
+      </svg>
+    );
+  }
+  if (ext === "html" || ext === "htm") {
+    return (
+      <svg className="file-icon" width={size} height={size} viewBox="0 0 16 16" aria-hidden>
+        <rect width="16" height="16" rx="3" fill="#e34f26" />
+        <path d="M4 4h8l-.7 8L8 13l-3.3-1L4 4Zm6.3 2.5H5.7l.1 1.4h4.3l-.3 3-1.8.6-1.8-.6-.1-1.2h1.3v.5l.6.2.6-.2.1-1H5.6l-.3-3.7h5.2l-.2 1Z" fill="#fff" />
+      </svg>
+    );
+  }
+  const c = FILE_ICON_COLORS[ext];
+  if (c) {
+    const fontSize = c.label.length >= 3 ? 5.4 : c.label.length === 2 ? 6.6 : 8.4;
+    return (
+      <svg className="file-icon" width={size} height={size} viewBox="0 0 16 16" aria-hidden>
+        <rect width="16" height="16" rx="3" fill={c.bg} />
+        <text
+          x="8"
+          y="8"
+          textAnchor="middle"
+          dominantBaseline="central"
+          fontSize={fontSize}
+          fontWeight="700"
+          fontFamily="-apple-system, system-ui, sans-serif"
+          fill={c.fg ?? "#fff"}
+        >
+          {c.label}
+        </text>
+      </svg>
+    );
+  }
+  return <Icon name="file" size={size} />;
 }
 
 export const TOOL_ICON: Record<string, string> = {

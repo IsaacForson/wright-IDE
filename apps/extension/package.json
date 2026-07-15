@@ -200,7 +200,9 @@
         },
         "wright.privacy.sensitiveGlobs": {
           "type": "array",
-          "items": { "type": "string" },
+          "items": {
+            "type": "string"
+          },
           "default": [],
           "markdownDescription": "**Privacy routing** — glob patterns (e.g. `**/secrets/**`, `*.env`, `packages/private/**`). When a chat turn attaches or @-mentions a matching file, that turn is forced to your **local** model and never sent to any cloud provider."
         },
@@ -276,7 +278,9 @@
         },
         "wright.providers.openrouter.models": {
           "type": "array",
-          "items": { "type": "string" },
+          "items": {
+            "type": "string"
+          },
           "default": [
             "poolside/laguna-m.1:free",
             "openai/gpt-oss-120b:free",
@@ -298,8 +302,13 @@
         },
         "wright.providers.deepseek.models": {
           "type": "array",
-          "items": { "type": "string" },
-          "default": ["deepseek-chat", "deepseek-reasoner"],
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "deepseek-chat",
+            "deepseek-reasoner"
+          ],
           "description": "DeepSeek model ids shown in the picker."
         },
         "wright.providers.groq.enabled": {
@@ -314,8 +323,13 @@
         },
         "wright.providers.groq.models": {
           "type": "array",
-          "items": { "type": "string" },
-          "default": ["llama-3.3-70b-versatile", "qwen/qwen3-32b"],
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "llama-3.3-70b-versatile",
+            "qwen/qwen3-32b"
+          ],
           "description": "Groq model ids shown in the picker (Llama 3.3 70B / Qwen3 — strong free coding speed)."
         },
         "wright.providers.gemini.enabled": {
@@ -330,8 +344,14 @@
         },
         "wright.providers.gemini.models": {
           "type": "array",
-          "items": { "type": "string" },
-          "default": ["gemini-3.5-flash", "gemini-3.1-flash-lite", "gemini-3-flash-preview"],
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "gemini-3.5-flash",
+            "gemini-3.1-flash-lite",
+            "gemini-3-flash-preview"
+          ],
           "description": "Gemini model ids for the picker. Prefer 3.5 Flash — 2.5 Flash is blocked for new users; Pro is paid-only."
         },
         "wright.providers.cerebras.enabled": {
@@ -346,8 +366,14 @@
         },
         "wright.providers.cerebras.models": {
           "type": "array",
-          "items": { "type": "string" },
-          "default": ["gpt-oss-120b", "zai-glm-4.7", "gemma-4-31b"],
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "gpt-oss-120b",
+            "zai-glm-4.7",
+            "gemma-4-31b"
+          ],
           "description": "Cerebras model ids for the picker. llama-3.3-70b / qwen-3-32b were deprecated — use gpt-oss-120b."
         },
         "wright.providers.mistral.enabled": {
@@ -362,8 +388,13 @@
         },
         "wright.providers.mistral.models": {
           "type": "array",
-          "items": { "type": "string" },
-          "default": ["codestral-latest", "mistral-large-latest"],
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "codestral-latest",
+            "mistral-large-latest"
+          ],
           "description": "Mistral model ids shown in the picker (Codestral for code, Large for reasoning)."
         },
         "wright.model.chat": {
@@ -446,7 +477,9 @@
         },
         "wright.routing.strongChain": {
           "type": "array",
-          "items": { "type": "string" },
+          "items": {
+            "type": "string"
+          },
           "default": [
             "mistralai/mistral-large-3-675b-instruct-2512",
             "deepseek-ai/deepseek-v4-pro",
@@ -561,7 +594,7 @@
             "meta/llama-3.3-70b-instruct",
             "meta/llama-3.1-8b-instruct"
           ],
-          "markdownDescription": "Models shown in the chat picker. Add or remove any NVIDIA NIM model id (must support tool calling for agent work \u2014 check with `pnpm verify -- <id>`). \"auto\" is always included."
+          "markdownDescription": "Models shown in the chat picker. Add or remove any NVIDIA NIM model id (must support tool calling for agent work — check with `pnpm verify -- <id>`). \"auto\" is always included."
         },
         "wright.defaultMode": {
           "type": "string",
@@ -649,7 +682,7 @@
         "wright.ollama.url": {
           "type": "string",
           "default": "http://localhost:11434",
-          "markdownDescription": "Ollama server URL. Point this at a REMOTE Ollama (e.g. a rented GPU box: `http://your-server:11434`) to run big local models off-machine \u2014 the picker, downloads, and fallback all follow it."
+          "markdownDescription": "Ollama server URL. Point this at a REMOTE Ollama (e.g. a rented GPU box: `http://your-server:11434`) to run big local models off-machine — the picker, downloads, and fallback all follow it."
         }
       }
     }
@@ -677,5 +710,8 @@
     "react": "^18.3.0",
     "react-dom": "^18.3.0",
     "typescript": "^5.7.0"
+  },
+  "dependencies": {
+    "@vscode/codicons": "^0.0.45"
   }
 }

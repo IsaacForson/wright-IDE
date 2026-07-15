@@ -43,7 +43,7 @@ import { buildFailoverClient, buildPickerModels, getCloudProviders, hasAnyCloudC
 import { getActiveFile, workspaceRoot } from "./workspace.js";
 import * as os from "node:os";
 import * as path from "node:path";
-import type { ChatMode, FileAttachment, HostToWebview, ResearchMode, UiItem, WebviewToHost } from "./protocol.js";
+import type { ChatMode, FileAttachment, FileChangeItem, HostToWebview, ResearchMode, UiItem, WebviewToHost } from "./protocol.js";
 import type { AgentMode } from "@wright/core";
 
 const NO_WORKSPACE_NOTE = `
@@ -192,6 +192,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
   /** Agent history to restore once the agent is first built this session. */
   private savedMessages: ChatMessage[] | undefined;
+  /** Prompts the user queued while a turn was running; drained in order. */
+  private promptQueue: Array<{ id: string; msg: Extract<WebviewToHost, { type: "send" }> }> = [];
+  private queueSeq = 0;
+  /** Iteration cap of the current agent (mirrors buildAgent's maxIterations). */
+  private agentMaxIterations = 25;
+  /** Consecutive automatic continues after hitting the iteration cap. */
+  private autoContinues = 0;
+  private pendingAutoContinue = false;
 
   private loadSessions(): StoredSession[] {
     const cutoff = Date.now() - 30 * 24 * 60 * 60 * 1000;
@@ -386,6 +394,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this.applyPermissionDefault();
     this.pendingPlan = undefined;
     this.savedMessages = undefined;
+    this.promptQueue = [];
+    this.postQueue();
     this.items = [];
     this.sessionId = `s${Date.now().toString(36)}`;
     this.sendState(false);
@@ -492,6 +502,33 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     qp.show();
   }
 
+  /** Changes shown in the panel — hides .wright/ internals (live plan ticks). */
+  private visibleChanges(): FileChangeItem[] {
+    return (this.tracker?.changes() ?? []).filter((c) => !c.path.startsWith(".wright/"));
+  }
+
+  /**
+   * Write the live plan checklist to .wright/plan.md and open it beside the
+   * chat. The agent ticks steps off with edit_file as it completes them.
+   */
+  private async writePlanFile(task: string, steps: string[]): Promise<boolean> {
+    const root = this.rootPath ?? workspaceRoot()?.fsPath;
+    if (!root || steps.length === 0) return false;
+    try {
+      const dir = vscode.Uri.joinPath(vscode.Uri.file(root), ".wright");
+      await vscode.workspace.fs.createDirectory(dir);
+      const file = vscode.Uri.joinPath(dir, "plan.md");
+      const title = task.length > 80 ? `${task.slice(0, 80)}…` : task;
+      const body = `# Plan — ${title}\n\n${steps.map((s) => `- [ ] ${s}`).join("\n")}\n`;
+      await vscode.workspace.fs.writeFile(file, Buffer.from(body, "utf8"));
+      const doc = await vscode.workspace.openTextDocument(file);
+      await vscode.window.showTextDocument(doc, { preview: true, viewColumn: vscode.ViewColumn.One, preserveFocus: true });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   /** Scaffold a new reusable workflow (.wright/workflows/<name>.md) and open it. */
   async newWorkflow(): Promise<void> {
     const root = this.rootPath ?? workspaceRoot()?.fsPath;
@@ -554,7 +591,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       model: this.model,
       models,
       busy,
-      changes: this.tracker?.changes() ?? [],
+      changes: this.visibleChanges(),
       planPending: this.pendingPlan !== undefined,
       approvalMode: this.approvalMode,
       permissionDefault: this.permissionDefault,
@@ -612,7 +649,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   private sendChanges(): void {
-    this.post({ type: "changes", changes: this.tracker?.changes() ?? [] });
+    this.post({ type: "changes", changes: this.visibleChanges() });
   }
 
   /** Park the agent on an in-chat permission card (replaces the VS Code modal). */
@@ -754,6 +791,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       }
       case "stop":
         this.abort?.abort();
+        // Stop means stop everything — clear anything queued behind this turn.
+        if (this.promptQueue.length) {
+          this.promptQueue = [];
+          this.postQueue();
+        }
         if (this.pendingAsk) {
           this.pendingAsk.reject(new ModelError("aborted", "Question cancelled"));
           this.pendingAsk = undefined;
@@ -771,36 +813,26 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         this.approvalMode = msg.mode;
         void vscode.workspace.getConfiguration("wright").update("approvalMode", msg.mode);
         return;
-      case "send": {
-        // Reusable workflows: a leading /name expands into its saved recipe,
-        // while the transcript keeps showing the short command the user typed.
-        let workflowLabel: string | undefined;
-        if (msg.text.startsWith("/")) {
-          const expanded = await expandWorkflow(this.rootPath ?? workspaceRoot()?.fsPath ?? os.homedir(), msg.text);
-          if (expanded !== msg.text) {
-            workflowLabel = msg.text;
-            msg.text = expanded;
-          }
-        }
-        if (this.pendingPlan && !msg.images?.length) {
-          // Typing while a plan awaits approval = revision feedback.
-          await this.handlePlan(this.pendingPlan.task, msg.text);
-        } else if (msg.mode === "plan" && !msg.images?.length) {
-          await this.handlePlan(msg.text);
+      case "send":
+        // Busy? Queue it (Cursor-style) instead of dropping — drained in order
+        // after the current turn finishes.
+        if (this.abort) {
+          this.enqueuePrompt(msg);
         } else {
-          const mode: AgentMode = msg.mode === "plan" || msg.mode === "agent" ? "agent" : msg.mode;
-          // Big-task detection (agent mode only): offer to plan first.
-          if (mode === "agent" && msg.mode === "agent" && !msg.images?.length && (await this.looksLikeBigTask(msg.text))) {
-            this.pendingSuggest = { text: msg.text, images: msg.images, files: msg.files, research: msg.research };
-            this.items.push({ kind: "text", role: "user", content: workflowLabel ?? msg.text, files: msg.files?.map((f) => f.name) });
-            this.post({ type: "planSuggest" });
-            this.sendState(false);
-            return;
-          }
-          await this.handleSend(msg.text, { displayText: workflowLabel, images: msg.images, files: msg.files, mode, research: msg.research });
+          await this.dispatchSend(msg);
         }
         return;
-      }
+      case "removeQueued":
+        this.promptQueue = this.promptQueue.filter((q) => q.id !== msg.id);
+        this.postQueue();
+        return;
+      case "backgroundCommand":
+        this.commandHost?.backgroundCurrent();
+        return;
+      case "clearQueue":
+        this.promptQueue = [];
+        this.postQueue();
+        return;
       case "openSettings":
         await vscode.commands.executeCommand("workbench.action.openSettings", "wright");
         return;
@@ -940,10 +972,18 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         this.sendState(false);
         if (!pending) return;
         // Use the user's edited checklist when provided; else the raw plan.
-        const message =
+        let message =
           msg.steps && msg.steps.length > 0
             ? executionMessageFromSteps(pending.task, msg.steps)
             : executionMessage(pending.task, pending.plan);
+        // Cursor-style live plan file: write .wright/plan.md, open it beside
+        // the chat, and have the agent tick steps off as it completes them.
+        const planFile = await this.writePlanFile(pending.task, msg.steps ?? parsePlanSteps(pending.plan));
+        if (planFile) {
+          message +=
+            "\n\nA live checklist of this plan exists at .wright/plan.md (already open in the editor). " +
+            "IMPORTANT: immediately after you complete each step, use edit_file on .wright/plan.md to change that step's \"- [ ]\" to \"- [x]\" so the user can watch progress. Keep it in sync as you go.";
+        }
         await this.handleSend(message, { displayText: "▶ Execute plan" });
         return;
       }
@@ -1462,7 +1502,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         outputReserve: 8_192,
       }),
       // Deep research fans out into many search rounds; give it headroom.
-      maxIterations: research === "deep" ? 60 : research === "research" ? 40 : 25,
+      maxIterations: (this.agentMaxIterations = research === "deep" ? 60 : research === "research" ? 40 : 25),
       systemPrompt:
         agentSystemPrompt({ workspaceName: vscode.workspace.name, rules, userRules, memories, mode, research }) +
         (root ? "" : NO_WORKSPACE_NOTE),
@@ -1518,6 +1558,84 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   /** Composer: draft (or revise) a plan and hold it for approval. */
+  /** Route one send message through workflows / plan / big-task / agent. */
+  private async dispatchSend(msg: Extract<WebviewToHost, { type: "send" }>): Promise<void> {
+    this.autoContinues = 0; // fresh user intent resets the auto-continue budget
+    // Reusable workflows: a leading /name expands into its saved recipe,
+    // while the transcript keeps showing the short command the user typed.
+    let workflowLabel: string | undefined;
+    if (msg.text.startsWith("/")) {
+      const expanded = await expandWorkflow(this.rootPath ?? workspaceRoot()?.fsPath ?? os.homedir(), msg.text);
+      if (expanded !== msg.text) {
+        workflowLabel = msg.text;
+        msg.text = expanded;
+      }
+    }
+    if (this.pendingPlan && !msg.images?.length) {
+      // Typing while a plan awaits approval = revision feedback.
+      await this.handlePlan(this.pendingPlan.task, msg.text);
+    } else if (msg.mode === "plan" && !msg.images?.length) {
+      await this.handlePlan(msg.text);
+    } else {
+      const mode: AgentMode = msg.mode === "plan" || msg.mode === "agent" ? "agent" : msg.mode;
+      // Big-task detection (agent mode only): offer to plan first.
+      if (mode === "agent" && msg.mode === "agent" && !msg.images?.length && (await this.looksLikeBigTask(msg.text))) {
+        this.pendingSuggest = { text: msg.text, images: msg.images, files: msg.files, research: msg.research };
+        this.items.push({ kind: "text", role: "user", content: workflowLabel ?? msg.text, files: msg.files?.map((f) => f.name) });
+        this.post({ type: "planSuggest" });
+        this.sendState(false);
+        return;
+      }
+      await this.handleSend(msg.text, { displayText: workflowLabel, images: msg.images, files: msg.files, mode, research: msg.research });
+    }
+  }
+
+  private enqueuePrompt(msg: Extract<WebviewToHost, { type: "send" }>): void {
+    this.promptQueue.push({ id: `q${this.queueSeq++}`, msg });
+    this.postQueue();
+  }
+
+  private postQueue(): void {
+    this.post({ type: "queue", items: this.promptQueue.map((q) => ({ id: q.id, text: q.msg.text })) });
+  }
+
+  /** After a turn ends, run the next queued prompt (if any and not busy). */
+  private drainQueue(): void {
+    if (this.abort || this.promptQueue.length === 0) return;
+    const next = this.promptQueue.shift()!;
+    this.postQueue();
+    void this.dispatchSend(next.msg);
+  }
+
+  /**
+   * A compact transcript of the last few turns, so plan generation (and any
+   * "continue"-style task) is grounded in what already happened instead of
+   * seeing only the bare task text.
+   */
+  private recentConversation(maxTurns = 8, perMsg = 900): string | undefined {
+    const messages = this.agent ? this.agent.history : (this.savedMessages ?? []);
+    const textOf = (content: unknown): string => {
+      if (typeof content === "string") return content;
+      if (Array.isArray(content)) {
+        return content
+          .map((p) => (p && typeof p === "object" && "text" in p ? String((p as { text?: string }).text ?? "") : "[image]"))
+          .join(" ");
+      }
+      return "";
+    };
+    const turns = messages
+      .filter((m) => m.role === "user" || m.role === "assistant")
+      .slice(-maxTurns)
+      .map((m) => {
+        const body = textOf(m.content).trim().replace(/\s+/g, " ");
+        if (!body) return "";
+        const clipped = body.length > perMsg ? `${body.slice(0, perMsg)}…` : body;
+        return `${m.role === "user" ? "User" : "Assistant"}: ${clipped}`;
+      })
+      .filter(Boolean);
+    return turns.length ? turns.join("\n") : undefined;
+  }
+
   private async handlePlan(task: string, feedback?: string): Promise<void> {
     if (this.abort) return;
     if (!hasAnyCloudCredential() && !this.model.startsWith("ollama:")) {
@@ -1558,10 +1676,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         : client;
       const indexer = root && config.apiKeys.length ? await this.indexService.ensure(embedClient, root.fsPath) : undefined;
       const context = indexer ? await planContext(indexer, task, this.abort.signal) : undefined;
+      const history = this.recentConversation();
       const plan = await generatePlan(
         client,
         planModel,
-        { task, context, priorPlan, feedback },
+        { task, context, priorPlan, feedback, history },
         {
           signal: this.abort.signal,
           onEvent: (e) => {
@@ -1585,6 +1704,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     } finally {
       this.abort = undefined;
       this.sendState(false);
+      this.drainQueue();
     }
   }
 
@@ -1776,6 +1896,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                 ? `${secs}s · ${event.iterations} step(s) · ${event.usage.prompt_tokens}→${event.usage.completion_tokens} tok`
                 : `${secs}s · ${event.iterations} step(s)`;
             this.post({ type: "turnDone", stats });
+            // Hit the per-turn step cap? The task isn't done — auto-continue
+            // (bounded) instead of stranding the user mid-task.
+            if (event.iterations >= this.agentMaxIterations && this.autoContinues < 3) {
+              this.pendingAutoContinue = true;
+            }
             break;
           }
         }
@@ -1796,6 +1921,20 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       this.sendState(false);
       this.pushContextUsage();
       void this.maybeAutoCompact();
+      if (this.pendingAutoContinue) {
+        this.pendingAutoContinue = false;
+        this.autoContinues += 1;
+        const note = `_⏩ Auto-continuing (${this.autoContinues}/3) — hit the per-turn step limit before finishing._`;
+        this.items.push({ kind: "text", role: "assistant", content: note });
+        this.post({ type: "assistantStart" });
+        this.post({ type: "delta", text: note });
+        void this.handleSend(
+          "Continue exactly where you left off. Finish ALL remaining steps of the current task; re-check your last action's result first.",
+          { skipUserItem: true },
+        );
+      } else {
+        this.drainQueue();
+      }
     }
   }
 
@@ -2033,7 +2172,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 <head>
   <meta charset="UTF-8">
   <meta http-equiv="Content-Security-Policy"
-        content="default-src 'none'; style-src ${webview.cspSource} 'unsafe-inline'; img-src data:; script-src 'nonce-${nonce}';">
+        content="default-src 'none'; style-src ${webview.cspSource} 'unsafe-inline'; img-src data:; font-src ${webview.cspSource}; script-src 'nonce-${nonce}';">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <link rel="stylesheet" href="${styleUri}">
   <title>Wright</title>

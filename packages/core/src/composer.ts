@@ -28,10 +28,20 @@ export interface PlanRequest {
   /** Prior plan + user feedback when revising. */
   priorPlan?: string;
   feedback?: string;
+  /**
+   * Recent conversation transcript so follow-up tasks ("continue", "now do X")
+   * are grounded in what already happened — otherwise the planner sees only
+   * the bare task text and reports "no prior context".
+   */
+  history?: string;
 }
 
 export function buildPlanMessages(req: PlanRequest): Array<{ role: "system" | "user"; content: string }> {
-  let user = `Task:\n${req.task}`;
+  let user = "";
+  if (req.history) {
+    user += `Conversation so far (context — the task below may continue this work):\n${req.history}\n\n`;
+  }
+  user += `Task:\n${req.task}`;
   if (req.context) user += `\n\nRelevant code context (retrieved automatically):\n${req.context}`;
   if (req.priorPlan && req.feedback) {
     user += `\n\nYou previously proposed this plan:\n${req.priorPlan}\n\nThe user wants it revised: ${req.feedback}\nProduce the full updated plan.`;

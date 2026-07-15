@@ -11,7 +11,7 @@ import bash from "highlight.js/lib/languages/bash";
 import markdown from "highlight.js/lib/languages/markdown";
 import type { ChatMode, FileAttachment, HostToWebview, ResearchMode, UiItem } from "../src/protocol.js";
 import { post } from "./vscode.js";
-import { Icon, IconButton, Select, toolIcon, type SelectOption } from "./components.js";
+import { FileIcon, Icon, IconButton, Select, toolIcon, type SelectOption } from "./components.js";
 
 hljs.registerLanguage("typescript", ts);
 hljs.registerLanguage("javascript", js);
@@ -331,6 +331,7 @@ export function App() {
   const [pendingFiles, setPendingFiles] = useState<FileAttachment[]>([]);
   const [mention, setMention] = useState<MentionState | undefined>();
   const [slash, setSlash] = useState<SlashState | undefined>();
+  const [queued, setQueued] = useState<Array<{ id: string; text: string }>>([]);
   const [dragOver, setDragOver] = useState(false);
   const dragDepth = useRef(0);
   const [status, setStatus] = useState("Working");
@@ -515,6 +516,9 @@ export function App() {
           if (msg.token === slashToken.current) {
             setSlash((s) => (s ? { ...s, entries: msg.entries, active: 0 } : s));
           }
+          break;
+        case "queue":
+          setQueued(msg.items);
           break;
         case "assistantStart":
           setError(undefined);
@@ -801,12 +805,18 @@ export function App() {
     const text = input.trim();
     const images = pendingImages;
     const files = pendingFiles;
-    if ((!text && images.length === 0 && files.length === 0) || busy) return;
+    if (!text && images.length === 0 && files.length === 0) return;
     setInput("");
     setPendingImages([]);
     setPendingFiles([]);
     setMention(undefined);
     setSlash(undefined);
+    // Busy? Queue it — the host holds it and runs it after the current turn.
+    // The user item appears in the transcript when the host actually drains it.
+    if (busy) {
+      post({ type: "send", text, mode, research, images: images.length ? images : undefined, files: files.length ? files : undefined });
+      return;
+    }
     setError(undefined);
     setStats(undefined);
     setStatus("Thinking");
@@ -1065,7 +1075,10 @@ export function App() {
         <div className="plan-review">
           {planSteps.length > 0 && (
             <div className="plan-steps">
-              <div className="plan-steps-head">Review & edit the plan — uncheck to skip, or edit any step</div>
+              <div className="plan-steps-head">
+                <Icon name="checklist" size={12} />
+                Plan · {planSteps.filter((s) => s.include).length}/{planSteps.length} steps — uncheck to skip, edit inline
+              </div>
               {planSteps.map((s, i) => (
                 <div key={i} className={`plan-step${s.include ? "" : " excluded"}`}>
                   <button
@@ -1114,6 +1127,29 @@ export function App() {
               Discard
             </button>
           </div>
+        </div>
+      )}
+
+      {queued.length > 0 && (
+        <div className="queue-list">
+          <div className="queue-head">
+            <Icon name="history" size={12} /> Queued ({queued.length}) — runs after the current turn
+            <button className="queue-clear" title="Clear all queued" onClick={() => post({ type: "clearQueue" })}>
+              Clear
+            </button>
+          </div>
+          {queued.map((q) => (
+            <div key={q.id} className="queue-item">
+              <span className="queue-text">{q.text}</span>
+              <button
+                className="queue-del"
+                title="Remove from queue"
+                onClick={() => post({ type: "removeQueued", id: q.id })}
+              >
+                <Icon name="x" size={11} />
+              </button>
+            </div>
+          ))}
         </div>
       )}
 
@@ -1190,7 +1226,7 @@ export function App() {
                 onMouseEnter={() => setMention({ ...mention, active: i })}
                 onClick={() => acceptMention(entry)}
               >
-                <Icon name={entry.type === "dir" ? "folder" : "file"} size={13} />
+                {entry.type === "dir" ? <Icon name="folder" size={13} /> : <FileIcon path={entry.path} size={13} />}
                 <span className="mention-name">{entry.path.split("/").pop()}</span>
                 <span className="mention-path">{entry.path.includes("/") ? entry.path.slice(0, entry.path.lastIndexOf("/")) : ""}</span>
               </button>
@@ -1572,13 +1608,20 @@ function WriteBlock({ item }: { item: Extract<UiItem, { kind: "write" }> }) {
   }, [html, streaming]);
 
   const [copied, setCopied] = useState(false);
+  const base = item.path.split("/").pop() ?? item.path;
+  const dir = item.path.includes("/") ? item.path.slice(0, item.path.lastIndexOf("/") + 1) : "";
+  const lineCount = item.code ? item.code.split("\n").length : 0;
   return (
     <div className={`write-block ${item.status}`}>
       <div className="write-header">
         <Icon name="pencil" size={12} />
+        <span className="write-verb">{streaming ? "Writing" : "Wrote"}</span>
+        <FileIcon path={item.path} size={15} />
         <button className="write-path" title={`Open ${item.path}`} onClick={() => post({ type: "openFile", path: item.path })}>
-          {item.path}
+          <span className="write-name">{base}</span>
+          {dir && <span className="write-dir">{dir}</span>}
         </button>
+        {lineCount > 0 && <span className="write-lines">+{lineCount}</span>}
         {streaming ? (
           <span className="tool-status running">
             <Icon name="spinner" size={12} spin />
@@ -1693,7 +1736,7 @@ function ToolRow({ item }: { item: Extract<UiItem, { kind: "tool" }> }) {
               post({ type: "openFile", path: item.argsSummary });
             }}
           >
-            {item.argsSummary}
+            {item.name !== "list_dir" && <FileIcon path={item.argsSummary} size={13} />} {item.argsSummary}
           </span>
         ) : (
           <span className="tool-args">{item.argsSummary}</span>
@@ -1766,6 +1809,19 @@ function CommandToolRow({
             )}
           </span>
         </button>
+        {item.status === "running" && (
+          <button
+            type="button"
+            className="command-bg-btn"
+            title="Keep this running in the terminal and let the agent continue"
+            onClick={(e) => {
+              e.stopPropagation();
+              post({ type: "backgroundCommand" });
+            }}
+          >
+            Run in background
+          </button>
+        )}
         <div className="command-menu-wrap" ref={menuRef}>
           <button
             type="button"
@@ -1971,6 +2027,7 @@ function ChangesPanel({
                 <Icon name="chevron" size={11} />
               </button>
               <span className={`change-kind ${c.kind}`}>{c.kind === "created" ? "A" : "M"}</span>
+              <FileIcon path={c.path} size={14} />
               <button className="change-path" title={`Open diff: ${c.path}`} onClick={() => post({ type: "openDiff", path: c.path })}>
                 {c.path}
               </button>

@@ -33,6 +33,10 @@ export type WebviewToHost =
   | { type: "setApprovalMode"; mode: "manual" | "auto-edit" | "auto" }
   | { type: "queryFiles"; query: string; token: number }
   | { type: "queryWorkflows"; token: number }
+  | { type: "removeQueued"; id: string }
+  | { type: "clearQueue" }
+  /** Push the currently running command to the background (keeps running in the terminal). */
+  | { type: "backgroundCommand" }
   | { type: "planDecision"; usePlan: boolean }
   | { type: "restoreCheckpoint"; id: string }
   | { type: "secondOpinion" }
@@ -124,6 +128,8 @@ export type HostToWebview =
   | { type: "fileHunks"; path: string; hunks: Array<{ header: string; lines: string[] }> }
   | { type: "fileList"; token: number; entries: Array<{ path: string; type: "file" | "dir" }> }
   | { type: "workflowList"; token: number; entries: Array<{ name: string; description: string }> }
+  /** Prompts queued while the agent is busy (drained in order after each turn). */
+  | { type: "queue"; items: Array<{ id: string; text: string }> }
   | { type: "sessions"; sessions: Array<{ id: string; title: string; updatedAt: number; current: boolean }> }
   | { type: "turnDone"; stats?: string }
   | { type: "contextUsage"; usage: number; enabled: boolean }
