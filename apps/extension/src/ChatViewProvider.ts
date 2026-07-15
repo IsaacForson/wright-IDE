@@ -1349,9 +1349,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this.rootPath = root?.fsPath ?? os.homedir();
     const config = getConfig();
 
+    // When the primary is a strong-tier model (auto-routed or picked), fail
+    // over along the trustworthy strong chain before any weak/free provider.
+    const preferChain = config.routing.strongChain.includes(model) ? config.routing.strongChain : undefined;
     let failover;
     try {
-      failover = await buildFailoverClient(model, { requireOllamaIfPrimary: true, forceLocal });
+      failover = await buildFailoverClient(model, { requireOllamaIfPrimary: true, forceLocal, preferChain });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       if (msg.includes("Ollama isn't reachable")) void offerOllamaInstall();

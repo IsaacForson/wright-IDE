@@ -54,15 +54,19 @@ export const PROVIDER_CATALOG: Record<string, CatalogProvider> = {
       "X-Title": "Wright",
     },
     // Live-checked against OpenRouter /models (free + tools, July 2026).
-    // DeepSeek :free removed; qwen3-coder:free hangs / retires Jul 19.
+    // DeepSeek :free removed. qwen/qwen3-coder:free (480B-A35B, 1M ctx, tools)
+    // is the strongest free coder but carries a deprecation notice — RETIRES
+    // Jul 19 2026 and has been observed to hang on some calls, so it sits LAST
+    // among the free coders (never the primary failover pick).
     suggestedModels: [
       "poolside/laguna-m.1:free",
       "openai/gpt-oss-120b:free",
       "nvidia/nemotron-3-super-120b-a12b:free",
       "cohere/north-mini-code:free",
+      "qwen/qwen3-coder:free",
       "openrouter/free",
     ],
-    signupHint: "Free key at openrouter.ai — Laguna / gpt-oss / Nemotron (DeepSeek & Qwen :free are dead/retiring)",
+    signupHint: "Free key at openrouter.ai — Laguna / gpt-oss / Nemotron / Qwen3-Coder-480B (Qwen :free retires Jul 19)",
     pickerHint: "openrouter · free coding",
   },
   deepseek: {

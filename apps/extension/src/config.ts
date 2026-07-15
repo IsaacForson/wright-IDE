@@ -15,7 +15,19 @@ export interface WrightConfig {
   embedModel: string;
   visionModel: string;
   /** Auto-routing tiers: which model the "Auto" picker uses per task shape. */
-  routing: { fast: string; balanced: string; strong: string };
+  routing: {
+    fast: string;
+    balanced: string;
+    /** Head of the strong tier — the primary for big/agent/debug work. */
+    strong: string;
+    /**
+     * Ordered failover chain of TRUSTWORTHY strong coders/reasoners. When the
+     * primary is a member of this chain and it's unavailable, Wright falls over
+     * to the next strong model here BEFORE any weak/free provider — so a hard
+     * task never silently drops to a shallow model.
+     */
+    strongChain: string[];
+  };
   webSearch: { provider: "tavily" | "brave" | "duckduckgo"; apiKey: string | undefined };
   approvalMode: ApprovalMode;
   /** Default stance for the in-chat permission card. */
@@ -39,6 +51,21 @@ export interface WrightConfig {
   /** Globs whose involvement forces local-only routing (never sent to cloud). */
   sensitiveGlobs: string[];
 }
+
+/**
+ * Trustworthy strong-tier failover chain (verified strong coders / deep
+ * reasoners, in preference order). Mistral Large 3 (41B active of 675B) leads;
+ * DeepSeek V4 Pro and GLM-5.2 back it up. Strong CLOUD coders come next so the
+ * chain survives even if NVIDIA is fully rate-limited, before any weak fallback.
+ */
+export const DEFAULT_STRONG_CHAIN = [
+  "mistralai/mistral-large-3-675b-instruct-2512",
+  "deepseek-ai/deepseek-v4-pro",
+  "z-ai/glm-5.2",
+  "moonshotai/kimi-k2.6",
+  "cerebras:zai-glm-4.7",
+  "openrouter:qwen/qwen3-coder:free",
+];
 
 export const DEFAULT_MODEL_LIST = [
   "z-ai/glm-5.2",
@@ -77,11 +104,18 @@ export function getConfig(): WrightConfig {
     fastModel: cfg.get<string>("model.fast") || "meta/llama-3.1-8b-instruct",
     embedModel: cfg.get<string>("model.embed") || "nvidia/nv-embedcode-7b-v1",
     visionModel: cfg.get<string>("model.vision") || "meta/llama-4-maverick-17b-128e-instruct",
-    routing: {
-      fast: cfg.get<string>("routing.fast") || cfg.get<string>("model.fast") || "meta/llama-3.1-8b-instruct",
-      balanced: cfg.get<string>("routing.balanced") || cfg.get<string>("model.chat") || "z-ai/glm-5.2",
-      strong: cfg.get<string>("routing.strong") || "mistralai/mistral-large-3-675b-instruct-2512",
-    },
+    routing: (() => {
+      const strongChain = (cfg.get<string[]>("routing.strongChain")?.filter(Boolean)?.length
+        ? cfg.get<string[]>("routing.strongChain")!.filter(Boolean)
+        : DEFAULT_STRONG_CHAIN);
+      return {
+        fast: cfg.get<string>("routing.fast") || cfg.get<string>("model.fast") || "meta/llama-3.1-8b-instruct",
+        balanced: cfg.get<string>("routing.balanced") || cfg.get<string>("model.chat") || "z-ai/glm-5.2",
+        // Explicit routing.strong wins; otherwise the head of the strong chain.
+        strong: cfg.get<string>("routing.strong") || strongChain[0]!,
+        strongChain,
+      };
+    })(),
     webSearch: {
       provider: (cfg.get<string>("webSearch.provider") as "tavily" | "brave" | "duckduckgo") || "duckduckgo",
       apiKey: cfg.get<string>("webSearch.apiKey")?.trim() || undefined,

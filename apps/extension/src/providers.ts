@@ -217,12 +217,28 @@ async function targetForOllama(model: string, requireUp: boolean): Promise<Failo
 }
 
 /**
+ * Resolve a model ref ("bare-nvidia-id", "cerebras:foo", "openrouter/x:free")
+ * into a failover target, or undefined if its provider isn't ready. Used to
+ * expand the trustworthy strong chain into concrete targets.
+ */
+function targetForRef(ref: string): FailoverTarget | undefined {
+  const config = getConfig();
+  const { providerId, model } = parseModelRef(ref);
+  if (providerId === "nvidia") return config.apiKeys.length ? targetForNvidia(model) : undefined;
+  const p = getReadyCloudProviders().find((x) => x.id === providerId);
+  return p ? targetForCloud(p, model) : undefined;
+}
+
+/**
  * Build an ordered failover client for a picker model ref (`auto`, bare NIM id,
  * `groq:…`, `ollama:…`, etc.).
+ *
+ * `preferChain` (the routing strong chain) is inserted right after the primary
+ * so a hard task fails over to the NEXT strong model before any weak fallback.
  */
 export async function buildFailoverClient(
   modelRef: string,
-  opts: { requireOllamaIfPrimary?: boolean; forceLocal?: boolean } = {},
+  opts: { requireOllamaIfPrimary?: boolean; forceLocal?: boolean; preferChain?: string[] } = {},
 ): Promise<{ client: FailoverModelClient; agentModel: string; targets: FailoverTarget[] }> {
   const config = getConfig();
   const wcfg = vscode.workspace.getConfiguration("wright");
@@ -230,7 +246,22 @@ export async function buildFailoverClient(
   const ollamaFallbackModel = wcfg.get<string>("fallback.ollamaModel") || "qwen2.5-coder:14b";
   const ready = getReadyCloudProviders();
   const customs = getCustomFallbackProviders();
+
+  // Dedup targets by provider+model so the chain and generic fallback don't
+  // add the same endpoint twice; earlier (higher-priority) entries win.
+  const seen = new Set<string>();
   const targets: FailoverTarget[] = [];
+  const add = (t: FailoverTarget | undefined): void => {
+    if (!t) return;
+    const key = `${t.name}::${t.model}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    targets.push(t);
+  };
+  /** Insert the strong chain (skips the primary/dupes automatically). */
+  const addChain = (): void => {
+    for (const ref of opts.preferChain ?? []) add(targetForRef(ref));
+  };
 
   // Offline mode / privacy routing: local-only, no cloud in the chain.
   if (opts.forceLocal) {
@@ -256,19 +287,18 @@ export async function buildFailoverClient(
     if (!primary) {
       throw new Error("Ollama isn't reachable — install/start it (or fix wright.ollama.url), or pick a cloud model.");
     }
-    targets.push(primary);
-    if (config.apiKeys.length) targets.push(targetForNvidia(config.chatModel));
-    for (const p of ready) targets.push(targetForCloud(p, p.models[0]!));
-    for (const p of customs) targets.push(targetForCustom(p));
+    add(primary);
+    addChain();
+    if (config.apiKeys.length) add(targetForNvidia(config.chatModel));
+    for (const p of ready) add(targetForCloud(p, p.models[0]!));
+    for (const p of customs) add(targetForCustom(p));
   } else if (providerId === "nvidia") {
     agentModel = model;
-    targets.push(targetForNvidia(agentModel));
-    for (const p of ready) targets.push(targetForCloud(p, p.models[0]!));
-    for (const p of customs) targets.push(targetForCustom(p));
-    if (ollamaFallback) {
-      const ol = await targetForOllama(ollamaFallbackModel, false);
-      if (ol) targets.push(ol);
-    }
+    add(targetForNvidia(agentModel));
+    addChain();
+    for (const p of ready) add(targetForCloud(p, p.models[0]!));
+    for (const p of customs) add(targetForCustom(p));
+    if (ollamaFallback) add(await targetForOllama(ollamaFallbackModel, false));
   } else {
     // Named cloud provider as primary.
     const primary = ready.find((p) => p.id === providerId);
@@ -278,17 +308,15 @@ export async function buildFailoverClient(
       );
     }
     agentModel = model;
-    targets.push(targetForCloud(primary, agentModel));
-    if (config.apiKeys.length) targets.push(targetForNvidia(config.chatModel));
+    add(targetForCloud(primary, agentModel));
+    addChain();
+    if (config.apiKeys.length) add(targetForNvidia(config.chatModel));
     for (const p of ready) {
       if (p.id === providerId) continue;
-      targets.push(targetForCloud(p, p.models[0]!));
+      add(targetForCloud(p, p.models[0]!));
     }
-    for (const p of customs) targets.push(targetForCustom(p));
-    if (ollamaFallback) {
-      const ol = await targetForOllama(ollamaFallbackModel, false);
-      if (ol) targets.push(ol);
-    }
+    for (const p of customs) add(targetForCustom(p));
+    if (ollamaFallback) add(await targetForOllama(ollamaFallbackModel, false));
   }
 
   if (targets.length === 0) {

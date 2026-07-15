@@ -436,14 +436,26 @@
         "wright.routing.strong": {
           "type": "string",
           "default": "mistralai/mistral-large-3-675b-instruct-2512",
-          "markdownDescription": "**Auto** routing — model for big / multi-file / debug tasks. Strongest coder.",
+          "markdownDescription": "**Auto** routing — primary model for big / multi-file / debug tasks. Should be a strong coder. (Defaults to the head of `routing.strongChain`.)",
           "enum": [
             "mistralai/mistral-large-3-675b-instruct-2512",
             "z-ai/glm-5.2",
             "deepseek-ai/deepseek-v4-pro",
-            "moonshotai/kimi-k2.6",
-            "qwen/qwen3.5-122b-a10b"
+            "moonshotai/kimi-k2.6"
           ]
+        },
+        "wright.routing.strongChain": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": [
+            "mistralai/mistral-large-3-675b-instruct-2512",
+            "deepseek-ai/deepseek-v4-pro",
+            "z-ai/glm-5.2",
+            "moonshotai/kimi-k2.6",
+            "cerebras:zai-glm-4.7",
+            "openrouter:qwen/qwen3-coder:free"
+          ],
+          "markdownDescription": "Ordered **trustworthy failover chain** for strong/big tasks. When the primary is one of these and it's rate-limited or unavailable, Wright falls over to the next strong coder here **before** any weak/free model — so a hard task never silently drops to a shallow model. Use `provider:model` for cloud entries (e.g. `cerebras:zai-glm-4.7`)."
         },
         "wright.webSearch.provider": {
           "type": "string",

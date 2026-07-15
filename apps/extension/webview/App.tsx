@@ -171,15 +171,26 @@ function modelLabel(id: string): string {
   return id.split("/").pop() ?? id;
 }
 
+/** Fallback hint per cloud provider when a model isn't in CLOUD_MODEL_HINTS. */
+const PROVIDER_FALLBACK_HINT: Record<string, string> = {
+  openrouter: "openrouter · free coding",
+  deepseek: "deepseek · coding",
+  groq: "groq · fast coding",
+  gemini: "gemini · free coding",
+  cerebras: "cerebras · fastest",
+  mistral: "mistral · codestral",
+};
+
 function modelHint(id: string): string | undefined {
   if (id === "auto") return MODEL_HINTS.auto;
   if (id.startsWith("ollama:")) return "local · free";
-  if (id.startsWith("openrouter:")) return "openrouter · free coding";
-  if (id.startsWith("deepseek:")) return "deepseek · coding";
-  if (id.startsWith("groq:")) return "groq · fast coding";
-  if (id.startsWith("gemini:")) return "gemini · free coding";
-  if (id.startsWith("cerebras:")) return "cerebras · fastest";
-  if (id.startsWith("mistral:")) return "mistral · codestral";
+  for (const provider of Object.keys(PROVIDER_FALLBACK_HINT)) {
+    const prefix = `${provider}:`;
+    if (id.startsWith(prefix)) {
+      const model = id.slice(prefix.length);
+      return CLOUD_MODEL_HINTS[model] ?? PROVIDER_FALLBACK_HINT[provider];
+    }
+  }
   return MODEL_HINTS[id];
 }
 
@@ -199,18 +210,55 @@ function modelIcon(id: string): string | undefined {
   return undefined;
 }
 
-/** What each NVIDIA model is best at — shown as the hint in the picker. */
+/**
+ * What each NVIDIA model is best at — shown as the hint in the picker.
+ * "strong coding" / "deep reasoning" mark the models to trust for hard,
+ * finish-the-job agent tasks (large context, many tool calls). Models with
+ * few ACTIVE params (MoE "aNNb") are fast but shallow — flagged as light.
+ */
 const MODEL_HINTS: Record<string, string> = {
   auto: "routes per task",
-  "z-ai/glm-5.2": "coding + UI design · fast",
-  "mistralai/mistral-large-3-675b-instruct-2512": "strongest coding · fast",
-  "deepseek-ai/deepseek-v4-pro": "deep reasoning",
-  "moonshotai/kimi-k2.6": "agentic coding",
+  "mistralai/mistral-large-3-675b-instruct-2512": "strong coding · reliable",
+  "z-ai/glm-5.2": "strong coding + UI · fast",
+  "deepseek-ai/deepseek-v4-pro": "deep reasoning + coding",
+  "moonshotai/kimi-k2.6": "strong agentic coding",
+  "minimaxai/minimax-m3": "deep reasoning",
   "nvidia/nemotron-3-super-120b-a12b": "balanced · fast",
-  "qwen/qwen3.5-122b-a10b": "coding + reasoning",
-  "minimaxai/minimax-m3": "reasoning",
-  "meta/llama-3.3-70b-instruct": "general",
+  "meta/llama-3.3-70b-instruct": "general purpose",
+  "qwen/qwen3.5-122b-a10b": "fast · light tasks only",
   "meta/llama-3.1-8b-instruct": "fastest · light tasks",
+};
+
+/**
+ * Per-model capability hints for cloud providers, keyed by the model id after
+ * the `provider:` prefix. Standout strong coders / deep reasoners get a real
+ * label; anything not listed falls back to PROVIDER_FALLBACK_HINT.
+ */
+const CLOUD_MODEL_HINTS: Record<string, string> = {
+  // OpenRouter :free
+  "qwen/qwen3-coder:free": "strong coding · free (480B)",
+  "openai/gpt-oss-120b:free": "coding · free",
+  "nvidia/nemotron-3-super-120b-a12b:free": "balanced · free",
+  "poolside/laguna-m.1:free": "coding · free",
+  "cohere/north-mini-code:free": "code · free",
+  "openrouter/free": "auto free coder",
+  // DeepSeek
+  "deepseek-chat": "strong coding",
+  "deepseek-reasoner": "deep reasoning",
+  // Groq (very fast)
+  "llama-3.3-70b-versatile": "general · very fast",
+  "qwen/qwen3-32b": "fast coding",
+  // Gemini (free)
+  "gemini-3.5-flash": "fast · free",
+  "gemini-3.1-flash-lite": "fastest · free",
+  "gemini-3-flash-preview": "fast · free",
+  // Cerebras (fastest)
+  "gpt-oss-120b": "coding · fastest",
+  "zai-glm-4.7": "strong coding · fastest",
+  "gemma-4-31b": "light · fastest",
+  // Mistral
+  "codestral-latest": "strong coding (code model)",
+  "mistral-large-latest": "strong reasoning",
 };
 
 /** Format elapsed seconds as "12s" or "1m 38s" (and "2h 3m" for long runs). */
