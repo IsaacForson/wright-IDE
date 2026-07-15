@@ -12,12 +12,23 @@
   --w-hover: color-mix(in srgb, var(--vscode-foreground) 7%, transparent);
   --w-active: color-mix(in srgb, var(--vscode-foreground) 12%, transparent);
   --w-surface: color-mix(in srgb, var(--vscode-foreground) 4%, var(--vscode-sideBar-background));
-  --w-accent: var(--vscode-focusBorder, #4daafc);
+  /* Ember palette: warm amber → coral. Not the editor's blue. */
+  --w-accent: #f5a623;
+  --w-accent-2: #f97316;
+  /* Text/icon color when sitting ON the accent (amber needs dark ink). */
+  --w-accent-fg: #241505;
   --w-ok: var(--vscode-testing-iconPassed, #73c991);
   --w-err: var(--vscode-errorForeground, #f14c4c);
   --w-radius: 6px;
   --w-radius-lg: 10px;
   --w-mono: var(--vscode-editor-font-family, ui-monospace, monospace);
+}
+
+/* Amber needs more pigment on white to keep contrast. */
+body.vscode-light {
+  --w-accent: #c2410c;
+  --w-accent-2: #ea580c;
+  --w-accent-fg: #ffffff;
 }
 
 html,
@@ -87,13 +98,14 @@ body,
 }
 
 .btn.primary {
-  background: var(--vscode-button-background);
+  background: linear-gradient(135deg, var(--w-accent), var(--w-accent-2));
   border-color: transparent;
-  color: var(--vscode-button-foreground);
+  color: var(--w-accent-fg);
+  font-weight: 600;
 }
 
 .btn.primary:hover:not(:disabled) {
-  background: var(--vscode-button-hoverBackground);
+  filter: brightness(1.08);
 }
 
 .btn.primary.stop {
@@ -255,8 +267,8 @@ body,
 }
 
 .mode-plan {
-  background: rgba(224, 168, 62, 0.16);
-  color: #e0b153;
+  background: rgba(167, 139, 250, 0.16);
+  color: #b39dfb;
 }
 
 .mode-debug {
@@ -270,8 +282,8 @@ body,
 }
 
 .mode-multi {
-  background: rgba(167, 139, 250, 0.16);
-  color: #b39dfb;
+  background: rgba(244, 114, 182, 0.15);
+  color: #f38fc0;
 }
 
 /* ── messages ── */
@@ -754,7 +766,7 @@ body,
 }
 
 .command-output.live {
-  border-left: 2px solid var(--vscode-textLink-foreground);
+  border-left: 2px solid var(--w-accent);
 }
 
 /* ── in-chat permission card ── */
@@ -817,8 +829,9 @@ body,
 }
 
 .permission-btn.primary {
-  background: var(--vscode-button-background);
-  color: var(--vscode-button-foreground);
+  background: linear-gradient(135deg, var(--w-accent), var(--w-accent-2));
+  color: var(--w-accent-fg);
+  font-weight: 600;
 }
 
 .permission-btn.ghost {
@@ -1280,8 +1293,8 @@ body.vscode-light .sessions-panel {
 }
 
 body.vscode-light .mode-plan {
-  color: #8a5a00;
-  background: rgba(154, 103, 0, 0.12);
+  color: #6a48d7;
+  background: rgba(106, 72, 215, 0.1);
 }
 
 body.vscode-light .mode-ask {
@@ -1290,8 +1303,8 @@ body.vscode-light .mode-ask {
 }
 
 body.vscode-light .mode-multi {
-  color: #6a48d7;
-  background: rgba(106, 72, 215, 0.1);
+  color: #c02670;
+  background: rgba(192, 38, 112, 0.1);
 }
 
 body.vscode-light .research-pill.research-websearch {
@@ -1542,7 +1555,7 @@ body.vscode-light .research-pill.research-deep {
   text-align: left;
   border: none;
   background: none;
-  color: var(--vscode-textLink-foreground);
+  color: var(--vscode-foreground);
   font-family: var(--w-mono);
   font-size: 11.5px;
   cursor: pointer;
@@ -1723,7 +1736,7 @@ body.vscode-light .research-pill.research-deep {
 .command-bg-btn:hover {
   background: var(--vscode-list-hoverBackground);
   color: var(--vscode-foreground);
-  border-color: var(--vscode-focusBorder);
+  border-color: var(--w-accent);
 }
 
 .queue-list {
