@@ -97,6 +97,11 @@
         "icon": "$(type-hierarchy)"
       },
       {
+        "command": "wright.openPlan",
+        "title": "Wright: Open Plan (latest)",
+        "icon": "$(checklist)"
+      },
+      {
         "command": "wright.inlineEdit",
         "title": "Wright: Inline Edit (describe a change to the selection)"
       },

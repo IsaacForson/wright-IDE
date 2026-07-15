@@ -36,6 +36,8 @@ import { createDiagnosticsTool } from "./diagnosticsTool.js";
 import { createGitHistoryTool } from "./gitHistoryTool.js";
 import { FileMemoryStore } from "./memoryStore.js";
 import { listWorkflows, expandWorkflow } from "./workflows.js";
+import { buildPlanMarkdown, hasUncheckedSteps, isContinueMessage, planSlug } from "./planFile.js";
+import { PlanPanel } from "./planPanel.js";
 import { TerminalHost } from "./terminalHost.js";
 import { DEFAULT_MODEL_LIST, getConfig } from "./config.js";
 import { RECOMMENDED_LOCAL_MODELS, deleteModel, ensureOllamaRunning, listLocalModels, offerOllamaInstall, pullModel } from "./ollama.js";
@@ -55,6 +57,9 @@ You are rooted at the user's HOME directory (~); all paths are relative to it. Y
 export const ORIGINAL_SCHEME = "wright-original";
 
 /** Keyword signals for a "large" task (shared by big-task detection + auto-router). */
+/** Max automatic "continue" turns per user task (each allows up to 25 steps). */
+const AUTO_CONTINUE_MAX = 5;
+
 const BIG_TASK_SIGNALS =
   /(build|create|implement|design|make)\b.{0,40}\b(app|application|project|website|system|dashboard|platform|feature|page|screen)|entire|whole|full[- ]?(stack|project|app)|from scratch|multiple|several|redesign|overhaul/i;
 
@@ -197,9 +202,15 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private queueSeq = 0;
   /** Iteration cap of the current agent (mirrors buildAgent's maxIterations). */
   private agentMaxIterations = 25;
-  /** Consecutive automatic continues after hitting the iteration cap. */
+  /** Consecutive automatic continues for one user task. */
   private autoContinues = 0;
-  private pendingAutoContinue = false;
+  /** How the last agent turn ended — inputs for the unfinished-work detector. */
+  private lastTurnEnd: { capHit: boolean; finalText: string } | undefined;
+  /** True while an executed plan's file may still have open steps. */
+  private planFileActive = false;
+  /** The plan document being executed right now. */
+  private currentPlanUri: vscode.Uri | undefined;
+  private currentPlanRel: string | undefined;
 
   private loadSessions(): StoredSession[] {
     const cutoff = Date.now() - 30 * 24 * 60 * 60 * 1000;
@@ -394,6 +405,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this.applyPermissionDefault();
     this.pendingPlan = undefined;
     this.savedMessages = undefined;
+    this.planFileActive = false;
+    this.currentPlanUri = undefined;
+    this.currentPlanRel = undefined;
+    this.autoContinues = 0;
     this.promptQueue = [];
     this.postQueue();
     this.items = [];
@@ -502,30 +517,54 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     qp.show();
   }
 
+  /**
+   * ▶ Build from the Plan panel: hand the plan file to the agent — resume its
+   * unchecked steps. Queues if a turn is already running.
+   */
+  buildPlan(uri: vscode.Uri, relPath: string): void {
+    this.currentPlanUri = uri;
+    this.currentPlanRel = relPath;
+    this.planFileActive = true;
+    this.autoContinues = 0;
+    const text =
+      `Execute the plan document at ${relPath}. Read it first; then work through every unchecked "- [ ]" step in order, ` +
+      `ticking each to "- [x]" with edit_file immediately after completing it. Follow the plan's Architecture and Tradeoffs sections. ` +
+      `Do NOT write a new plan — this one is approved. Finish with the plan's Verification step.`;
+    if (this.abort) {
+      this.enqueuePrompt({ type: "send", text, mode: "agent", research: "off" });
+    } else {
+      void this.handleSend(text, { displayText: "▶ Build plan", mode: "agent" });
+    }
+  }
+
   /** Changes shown in the panel — hides .wright/ internals (live plan ticks). */
   private visibleChanges(): FileChangeItem[] {
     return (this.tracker?.changes() ?? []).filter((c) => !c.path.startsWith(".wright/"));
   }
 
   /**
-   * Write the live plan checklist to .wright/plan.md and open it beside the
-   * chat. The agent ticks steps off with edit_file as it completes them.
+   * Write a Cursor-style plan document to .wright/plans/<slug>.md and open it
+   * in the RENDERED markdown preview (live-updates as the agent ticks steps).
+   * Returns the workspace-relative path, or undefined when nothing was written.
    */
-  private async writePlanFile(task: string, steps: string[]): Promise<boolean> {
+  private async writePlanFile(task: string, steps: string[], planBody?: string): Promise<string | undefined> {
     const root = this.rootPath ?? workspaceRoot()?.fsPath;
-    if (!root || steps.length === 0) return false;
+    if (!root || steps.length === 0) return undefined;
     try {
-      const dir = vscode.Uri.joinPath(vscode.Uri.file(root), ".wright");
+      const dir = vscode.Uri.joinPath(vscode.Uri.file(root), ".wright", "plans");
       await vscode.workspace.fs.createDirectory(dir);
-      const file = vscode.Uri.joinPath(dir, "plan.md");
-      const title = task.length > 80 ? `${task.slice(0, 80)}…` : task;
-      const body = `# Plan — ${title}\n\n${steps.map((s) => `- [ ] ${s}`).join("\n")}\n`;
-      await vscode.workspace.fs.writeFile(file, Buffer.from(body, "utf8"));
-      const doc = await vscode.workspace.openTextDocument(file);
-      await vscode.window.showTextDocument(doc, { preview: true, viewColumn: vscode.ViewColumn.One, preserveFocus: true });
-      return true;
+      const now = new Date();
+      const file = vscode.Uri.joinPath(dir, `${planSlug(task, now)}.md`);
+      await vscode.workspace.fs.writeFile(file, Buffer.from(buildPlanMarkdown(task, steps, now, planBody), "utf8"));
+      this.currentPlanUri = file;
+      this.currentPlanRel = `.wright/plans/${file.path.split("/").pop()}`;
+      // Wright's own plan viewer (real checkboxes, progress bar, live updates
+      // from disk) — VS Code's markdown preview renders task lists as literal
+      // "[ ]" text and themes everything blue, so we don't use it.
+      await PlanPanel.show(file, this.currentPlanRel);
+      return this.currentPlanRel;
     } catch {
-      return false;
+      return undefined;
     }
   }
 
@@ -978,13 +1017,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             : executionMessage(pending.task, pending.plan);
         // Cursor-style live plan file: write .wright/plan.md, open it beside
         // the chat, and have the agent tick steps off as it completes them.
-        const planFile = await this.writePlanFile(pending.task, msg.steps ?? parsePlanSteps(pending.plan));
+        const planFile = await this.writePlanFile(pending.task, msg.steps ?? parsePlanSteps(pending.plan), pending.plan);
+        this.planFileActive = planFile !== undefined; // unchecked steps keep auto-continue alive
         if (planFile) {
           message +=
-            "\n\nA live checklist of this plan exists at .wright/plan.md (already open in the editor). " +
-            "IMPORTANT: immediately after you complete each step, use edit_file on .wright/plan.md to change that step's \"- [ ]\" to \"- [x]\" so the user can watch progress. Keep it in sync as you go.";
+            `\n\nA live plan document exists at ${planFile} (already open in the editor). ` +
+            `IMPORTANT: immediately after you complete each step, use edit_file on ${planFile} to change that step's "- [ ]" to "- [x]" so the user can watch progress. Keep it in sync as you go.`;
         }
-        await this.handleSend(message, { displayText: "▶ Execute plan" });
+        await this.handleSend(message, { displayText: "▶ Build plan" });
         return;
       }
       case "discardPlan":
@@ -1561,6 +1601,24 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   /** Route one send message through workflows / plan / big-task / agent. */
   private async dispatchSend(msg: Extract<WebviewToHost, { type: "send" }>): Promise<void> {
     this.autoContinues = 0; // fresh user intent resets the auto-continue budget
+    // "continue" while a plan is mid-execution RESUMES that plan — regardless
+    // of the mode pill. Without this, Plan mode re-plans from scratch, which
+    // is exactly the "it made a whole new plan" failure.
+    if (
+      !this.pendingPlan &&
+      this.planFileActive &&
+      isContinueMessage(msg.text) &&
+      (await this.planHasUncheckedSteps())
+    ) {
+      await this.handleSend(
+        `Resume executing the plan document at ${this.currentPlanRel ?? ".wright/plans/"} exactly where it left off. ` +
+          `Open it, find the first unchecked "- [ ]" step, do it, tick it to "- [x]", and continue through every remaining step. ` +
+          `Do NOT write a new plan — the plan already exists.`,
+        { displayText: msg.text, mode: "agent" },
+      );
+      return;
+    }
+    this.planFileActive = false; // a stale plan must not hijack a NEW request
     // Reusable workflows: a leading /name expands into its saved recipe,
     // while the transcript keeps showing the short command the user typed.
     let workflowLabel: string | undefined;
@@ -1896,11 +1954,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                 ? `${secs}s · ${event.iterations} step(s) · ${event.usage.prompt_tokens}→${event.usage.completion_tokens} tok`
                 : `${secs}s · ${event.iterations} step(s)`;
             this.post({ type: "turnDone", stats });
-            // Hit the per-turn step cap? The task isn't done — auto-continue
-            // (bounded) instead of stranding the user mid-task.
-            if (event.iterations >= this.agentMaxIterations && this.autoContinues < 3) {
-              this.pendingAutoContinue = true;
-            }
+            // Record how the turn ended; the finally block decides whether the
+            // work is actually finished (cap hit, announced-but-undone action,
+            // or unchecked plan steps) and auto-continues if not.
+            this.lastTurnEnd = {
+              capHit: event.iterations >= this.agentMaxIterations,
+              finalText: event.finalText,
+            };
             break;
           }
         }
@@ -1921,20 +1981,66 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       this.sendState(false);
       this.pushContextUsage();
       void this.maybeAutoCompact();
-      if (this.pendingAutoContinue) {
-        this.pendingAutoContinue = false;
+      const reason = await this.unfinishedWorkReason();
+      this.lastTurnEnd = undefined;
+      if (reason) {
         this.autoContinues += 1;
-        const note = `_⏩ Auto-continuing (${this.autoContinues}/3) — hit the per-turn step limit before finishing._`;
+        const note = `_⏩ Auto-continuing (${this.autoContinues}/${AUTO_CONTINUE_MAX}) — ${reason}._`;
         this.items.push({ kind: "text", role: "assistant", content: note });
         this.post({ type: "assistantStart" });
         this.post({ type: "delta", text: note });
+        const planNote = this.planFileActive && this.currentPlanRel
+          ? ` Work through the unchecked steps in ${this.currentPlanRel} and tick each one off.`
+          : "";
         void this.handleSend(
-          "Continue exactly where you left off. Finish ALL remaining steps of the current task; re-check your last action's result first.",
-          { skipUserItem: true },
+          `You stopped before the task was finished. Continue exactly where you left off — do the action you last announced, then keep going until every remaining step is done.${planNote} Do not stop again to narrate; act.`,
+          { skipUserItem: true, mode },
         );
       } else {
         this.drainQueue();
       }
+    }
+  }
+
+  /**
+   * Decide whether the turn that just ended left work unfinished. Three
+   * signals, in order of reliability:
+   *  1. the per-turn step cap was hit (task physically truncated);
+   *  2. an executed plan's .wright/plan.md still has unchecked "- [ ]" steps;
+   *  3. the final text ANNOUNCES a next action ("Now I'll create the order
+   *     routes…") — the model narrated intent and quit instead of acting.
+   * Returns a human-readable reason, or undefined when the turn looks done.
+   * Never fires when the model is asking the user something, or past budget.
+   */
+  private async unfinishedWorkReason(): Promise<string | undefined> {
+    const end = this.lastTurnEnd;
+    if (!end || this.autoContinues >= AUTO_CONTINUE_MAX || this.pendingAsk) return undefined;
+    const text = end.finalText.trim();
+    if (/\?\s*$/.test(text)) return undefined; // genuinely waiting on the user
+    if (end.capHit) return "hit the per-turn step limit before finishing";
+    if (this.planFileActive) {
+      const open = await this.planHasUncheckedSteps();
+      if (open === false) this.planFileActive = false; // plan finished — stand down
+      if (open) return "the plan still has unchecked steps";
+    }
+    // Announced-but-undone: last sentence declares a future action. "let me
+    // know" style sign-offs are excluded.
+    const tail = text.slice(-220);
+    const intent =
+      /\b(?:i'?ll|i will|i'?m going to|i am going to|i need to|let me(?!\s+know))\s+[^.?!\n]{3,140}[.!]?\s*$/i.test(tail) ||
+      /\b(?:next|now),?\s+(?:i'?ll|i will|let'?s|we)\b[^.?!\n]{0,140}[.!]?\s*$/i.test(tail);
+    if (intent) return "it announced the next action but stopped before doing it";
+    return undefined;
+  }
+
+  /** True if the current plan document still contains "- [ ]" steps. */
+  private async planHasUncheckedSteps(): Promise<boolean | undefined> {
+    if (!this.currentPlanUri) return undefined;
+    try {
+      const raw = Buffer.from(await vscode.workspace.fs.readFile(this.currentPlanUri)).toString("utf8");
+      return hasUncheckedSteps(raw);
+    } catch {
+      return undefined; // plan file gone — no signal
     }
   }
 

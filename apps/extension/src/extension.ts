@@ -10,6 +10,7 @@ import { WrightSettingsPanel } from "./settingsPanel.js";
 import { UsageTracker } from "./usageTracker.js";
 import { WrightUsagePanel } from "./usagePanel.js";
 import { CodemapPanel } from "./codemapPanel.js";
+import { PlanPanel } from "./planPanel.js";
 import { setUsageReporter } from "./providers.js";
 import {
   applyBuiltinChatVisibility,
@@ -23,6 +24,8 @@ export function activate(context: vscode.ExtensionContext): void {
 
   const indexService = new IndexService(getConfig().embedModel);
   const chatProvider = new ChatViewProvider(context.extensionUri, indexService, context.workspaceState);
+  // ▶ Build in the Plan panel hands the plan file to the chat agent.
+  PlanPanel.onBuild = (uri, rel) => chatProvider.buildPlan(uri, rel);
 
   // Cross-provider usage tracking (attributed to the provider that served each request).
   const usage = new UsageTracker(context.globalState);
@@ -35,6 +38,7 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand("wright.memories", () => void chatProvider.manageMemories()),
     vscode.commands.registerCommand("wright.newWorkflow", () => void chatProvider.newWorkflow()),
     vscode.commands.registerCommand("wright.codemap", () => void CodemapPanel.show()),
+    vscode.commands.registerCommand("wright.openPlan", () => void PlanPanel.showLatest()),
     vscode.window.registerWebviewViewProvider(ChatViewProvider.viewType, chatProvider, {
       webviewOptions: { retainContextWhenHidden: true },
     }),

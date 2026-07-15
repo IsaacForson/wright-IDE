@@ -122,6 +122,7 @@ const CODICON_MAP: Record<string, string> = {
   slash: "circle-slash",
   circle: "circle-large-outline",
   more: "ellipsis",
+  tools: "tools",
 };
 
 export function Icon({ name, size = 14, spin = false }: { name: string; size?: number; spin?: boolean }) {

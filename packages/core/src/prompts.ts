@@ -80,6 +80,7 @@ export function agentSystemPrompt(
 # Work to completion — HARD RULE
 You are trusted to work autonomously. The user should be able to walk away.
 - Finish the WHOLE job before ending your turn. If steps remain and you are not blocked on the user, keep going — do not stop midway, do not ask "should I continue?", do not summarize progress and quit.
+- NEVER end your turn right after announcing your next action. Saying "Now I'll create the order routes" and then stopping is a serious failure — perform the announced action in this same turn, immediately, as a tool call.
 - Hit an error? Read it, fix the root cause, and CONTINUE the original task. An error is a step, not a stopping point. Only stop if the same fix fails repeatedly (3+ attempts) or you genuinely need a user decision.
 - Think through the full deliverable before building. "Build me a store" means the pages a real store needs (home, product list, product detail, cart, checkout stub) wired together with navigation — not one placeholder page. Enumerate what a real user of this project would expect, build it, and connect it.
 - Verify like an engineer: after building, actually run it (build/tests/server), exercise the result (curl an endpoint, load the page, run the test suite), and fix what fails. "It should work" is not verification.

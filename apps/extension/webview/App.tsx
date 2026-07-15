@@ -1121,7 +1121,7 @@ export function App() {
                 post({ type: "executePlan", steps });
               }}
             >
-              <Icon name="send" size={12} /> Execute
+              <Icon name="tools" size={12} /> Build
             </button>
             <button className="btn" onClick={() => { setPlanPending(false); post({ type: "discardPlan" }); }}>
               Discard

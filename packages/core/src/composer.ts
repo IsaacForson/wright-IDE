@@ -9,17 +9,30 @@ import type { SemanticIndex } from "./rag/tool.js";
  * with feedback, or discards; only an approved plan reaches the agent.
  */
 
-const PLAN_SYSTEM_PROMPT = `You are Wright's planning module. Produce a concise implementation plan for the user's coding task — you are NOT executing anything yet.
+const PLAN_SYSTEM_PROMPT = `You are Wright's planning module. Produce an implementation plan for the user's coding task, written like a real engineering hand-off ticket — you are NOT executing anything yet.
 
-Format (markdown):
+Format (markdown, use these EXACT section headings):
 ## Plan: <short title>
-**Goal** — one sentence.
-**Steps** — numbered; each step names the file(s) it touches and what changes. Order matters: earlier steps must not depend on later ones.
-**New files** — list with one-line purpose each (omit section if none).
-**Verification** — the exact command(s) to run and what success looks like.
-**Risks** — anything likely to break or need user input (omit if none).
 
-Rules: stay under 350 words; no code blocks unless a snippet is essential to disambiguate; only reference files you have evidence exist (from the provided context) or explicitly mark as new.`;
+## Overview
+2-4 sentences: what we're building, for whom, and the shape of the solution.
+
+## Architecture
+An ASCII diagram in a fenced code block (\\\`\\\`\\\` ... \\\`\\\`\\\`) showing the components and how data flows between them (boxes + arrows, max ~20 lines). Below it, 1-2 sentences explaining the diagram.
+
+## Tradeoffs
+2-4 bullet points: key decisions made, what was chosen over what alternative, and why (e.g. "SQLite over Postgres — zero setup for local dev; swap the Prisma datasource later if deploying").
+
+## Steps
+Numbered; each step names the file(s) it touches and what changes. Order matters: earlier steps must not depend on later ones. Steps must ONLY appear in this section.
+
+## Verification
+The exact command(s) to run and what success looks like.
+
+## Risks
+Anything likely to break or need user input (omit this section if none).
+
+Rules: stay under 550 words total; the Architecture code block is the only code block; only reference files you have evidence exist (from the provided context) or explicitly mark as new.`;
 
 export interface PlanRequest {
   task: string;
@@ -89,17 +102,31 @@ ${plan}`;
  * items under (typically) a "Steps" heading. Falls back to all list items.
  */
 export function parsePlanSteps(plan: string): string[] {
-  const lines = plan.split("\n");
-  const steps: string[] = [];
-  let inSteps = false;
-  for (const line of lines) {
-    if (/^#{1,4}\s|^\*\*/.test(line.trim())) {
-      inSteps = /steps/i.test(line);
+  const collect = (onlyStepsSection: boolean): string[] => {
+    const steps: string[] = [];
+    let inSteps = !onlyStepsSection;
+    let inFence = false;
+    for (const line of plan.split("\n")) {
+      const trimmed = line.trim();
+      if (trimmed.startsWith("```")) {
+        inFence = !inFence;
+        continue;
+      }
+      if (inFence) continue; // diagram lines are not steps
+      if (/^#{1,4}\s|^\*\*/.test(trimmed)) {
+        inSteps = onlyStepsSection ? /steps/i.test(trimmed) : true;
+        continue;
+      }
+      if (!inSteps) continue;
+      const m = line.match(/^\s*(?:\d+[.)]|[-*•])\s+(.*\S)/);
+      if (m) steps.push(m[1]!.replace(/\*\*/g, "").trim());
     }
-    const m = line.match(/^\s*(?:\d+[.)]|[-*•])\s+(.*\S)/);
-    if (m) steps.push(m[1]!.replace(/\*\*/g, "").trim());
-    else void inSteps;
-  }
+    return steps;
+  };
+  // Prefer bullets inside the Steps section (keeps Tradeoffs/Overview bullets
+  // out of the checklist); fall back to all bullets for free-form plans.
+  const scoped = collect(true);
+  const steps = scoped.length > 0 ? scoped : collect(false);
   // De-dupe and cap; if we somehow got nothing, return empty (caller keeps prose).
   return [...new Set(steps)].slice(0, 40);
 }
