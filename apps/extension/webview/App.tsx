@@ -918,7 +918,7 @@ export function App() {
         <div className="drop-overlay" aria-hidden>
           <Icon name="attach" size={28} />
           <span>Drop to attach as context</span>
-          <span className="drop-overlay-hint">Hold Shift while dropping (VS Code requirement)</span>
+          <span className="drop-overlay-hint">Images attach either way · hold Shift for other files (VS Code)</span>
         </div>
       )}
 
@@ -985,6 +985,15 @@ export function App() {
                 checkpointId={item.checkpointId}
                 busy={busy}
                 last={i === lastIndex && !busy}
+                onEdit={(text) => {
+                  setInput(text);
+                  requestAnimationFrame(() => {
+                    inputRef.current?.focus();
+                    resizeComposer();
+                    const end = text.length;
+                    inputRef.current?.setSelectionRange(end, end);
+                  });
+                }}
               />
             );
           }
@@ -1502,12 +1511,22 @@ function TextMessage(props: {
   checkpointId?: string;
   busy?: boolean;
   last?: boolean;
+  onEdit?: (text: string) => void;
 }) {
   return (
     <div className={`message ${props.role}`}>
       {props.role === "user" && (
         <div className="message-role">
           <span>You</span>
+          {props.content && props.onEdit && (
+            <button
+              className="restore-btn"
+              title="Edit & resend — copy this message into the composer"
+              onClick={() => props.onEdit!(props.content!)}
+            >
+              <Icon name="pencil" size={11} /> Edit
+            </button>
+          )}
           {props.checkpointId && !props.busy && (
             <button
               className="restore-btn"

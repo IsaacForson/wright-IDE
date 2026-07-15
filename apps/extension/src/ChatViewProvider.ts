@@ -517,6 +517,38 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     qp.show();
   }
 
+  /** True when the chat webview is currently visible in the sidebar. */
+  isViewVisible(): boolean {
+    return this.view?.visible ?? false;
+  }
+
+  /**
+   * Attach an image file to the composer from outside the normal drop flow
+   * (used by the no-Shift drop rescue: VS Code opened the dropped image as a
+   * tab; we grab it and attach instead). Returns false if not attachable.
+   */
+  async attachExternalImage(uri: vscode.Uri): Promise<boolean> {
+    const base = uri.fsPath.split(/[/\\]/).pop() ?? uri.fsPath;
+    if (!/\.(png|jpe?g|gif|webp|bmp)$/i.test(base)) return false;
+    try {
+      const stat = await vscode.workspace.fs.stat(uri);
+      if (stat.size > 4_000_000) return false;
+      const bytes = await vscode.workspace.fs.readFile(uri);
+      const mime =
+        /\.png$/i.test(base) ? "image/png"
+        : /\.webp$/i.test(base) ? "image/webp"
+        : /\.gif$/i.test(base) ? "image/gif"
+        : "image/jpeg";
+      this.post({
+        type: "attachImage",
+        dataUrl: `data:${mime};base64,${Buffer.from(bytes).toString("base64")}`,
+      });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   /**
    * ▶ Build from the Plan panel: hand the plan file to the agent — resume its
    * unchecked steps. Queues if a turn is already running.
@@ -2017,12 +2049,17 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     if (!end || this.autoContinues >= AUTO_CONTINUE_MAX || this.pendingAsk) return undefined;
     const text = end.finalText.trim();
     if (/\?\s*$/.test(text)) return undefined; // genuinely waiting on the user
-    if (end.capHit) return "hit the per-turn step limit before finishing";
     if (this.planFileActive) {
       const open = await this.planHasUncheckedSteps();
-      if (open === false) this.planFileActive = false; // plan finished — stand down
+      if (open === false) {
+        // Every step ticked → the task IS done. Stand down completely: no
+        // cap/intent continues either, or the agent invents busywork forever.
+        this.planFileActive = false;
+        return undefined;
+      }
       if (open) return "the plan still has unchecked steps";
     }
+    if (end.capHit) return "hit the per-turn step limit before finishing";
     // Announced-but-undone: last sentence declares a future action. "let me
     // know" style sign-offs are excluded.
     const tail = text.slice(-220);
