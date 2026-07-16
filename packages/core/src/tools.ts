@@ -14,6 +14,24 @@ export interface CommandResult {
   exitCode: number | null;
 }
 
+/** Options for WorkspaceHost.runCommand. */
+export interface RunCommandOptions {
+  signal?: AbortSignal;
+  /** Live stdout/stderr chunks for the UI. */
+  onChunk?: (text: string) => void;
+  /**
+   * Where to run the command:
+   * - terminal — visible IDE terminal (extension)
+   * - sandbox — invisible local process (Node spawn)
+   */
+  target?: "terminal" | "sandbox";
+  /**
+   * Long-running process (dev server, watcher): start it, return as soon as
+   * it's up, and LEAVE IT RUNNING instead of waiting for exit.
+   */
+  background?: boolean;
+}
+
 export interface SearchMatch {
   path: string;
   line: number;
@@ -30,7 +48,7 @@ export interface WorkspaceHost {
   writeFile(path: string, content: string): Promise<void>;
   listDir(path: string): Promise<DirEntry[]>;
   search(query: string, glob?: string): Promise<SearchMatch[]>;
-  runCommand(command: string, signal?: AbortSignal): Promise<CommandResult>;
+  runCommand(command: string, opts?: RunCommandOptions): Promise<CommandResult>;
   /** Optional; used by change tracking to revert created files. */
   deleteFile?(path: string): Promise<void>;
 }
@@ -226,18 +244,28 @@ export function createBuiltinTools(host: WorkspaceHost): Tool[] {
         name: "run_command",
         description:
           "Run a shell command in the workspace root (build, test, install, git status, …). " +
-          "Returns stdout, stderr and the exit code. The user must approve each command.",
+          "Runs in the user's visible IDE terminal. Returns stdout, stderr and the exit code. " +
+          "Always call this to execute commands yourself — never paste a command and ask the user to run it. " +
+          "If permission is needed, the UI will ask; wait for approval and continue. " +
+          "For long-running processes (dev server, watcher, tail) set background:true — the process " +
+          "starts, keeps running in the terminal, and you continue working immediately.",
         parameters: {
           type: "object",
           properties: {
             command: { type: "string", description: "The shell command to run" },
+            background: {
+              type: "boolean",
+              description:
+                "Set true for long-running processes (dev servers, watchers). Starts it, returns once it's up, leaves it running. Never wait for these to exit.",
+            },
           },
           required: ["command"],
         },
       },
     },
     async execute(args, signal) {
-      const result = await host.runCommand(str(args, "command"), signal);
+      const background = args["background"] === true;
+      const result = await host.runCommand(str(args, "command"), { signal, background });
       const parts = [
         `exit code: ${result.exitCode}`,
         result.stdout.trim() && `stdout:\n${result.stdout.trim()}`,

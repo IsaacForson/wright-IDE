@@ -33,8 +33,7 @@
   ],
   "contributes": {
     "configurationDefaults": {
-      "chat.disableAIFeatures": true,
-      "chat.titleBar.signIn.enabled": false,
+      "workbench.secondarySideBar.defaultVisibility": "visible",
       "workbench.welcomePage.experimentalOnboarding": false
     },
     "viewsContainers": {
@@ -80,6 +79,29 @@
         "title": "Wright: Rebuild Codebase Index"
       },
       {
+        "command": "wright.usage",
+        "title": "Wright: Usage Dashboard",
+        "icon": "$(graph)"
+      },
+      {
+        "command": "wright.memories",
+        "title": "Wright: Project Memories"
+      },
+      {
+        "command": "wright.newWorkflow",
+        "title": "Wright: New Workflow"
+      },
+      {
+        "command": "wright.codemap",
+        "title": "Wright: Codemap (architecture view)",
+        "icon": "$(type-hierarchy)"
+      },
+      {
+        "command": "wright.openPlan",
+        "title": "Wright: Open Plan (latest)",
+        "icon": "$(checklist)"
+      },
+      {
         "command": "wright.inlineEdit",
         "title": "Wright: Inline Edit (describe a change to the selection)"
       },
@@ -91,6 +113,11 @@
       {
         "command": "wright.addSelectionToChat",
         "title": "Add Selection to Chat"
+      },
+      {
+        "command": "wright.addToChat",
+        "title": "Add to Wright Chat",
+        "icon": "$(add)"
       },
       {
         "command": "wright.explainSelection",
@@ -122,9 +149,14 @@
           "group": "navigation@2"
         },
         {
-          "command": "wright.openSettings",
+          "command": "wright.usage",
           "when": "view == wright.chat",
           "group": "navigation@3"
+        },
+        {
+          "command": "wright.openSettings",
+          "when": "view == wright.chat",
+          "group": "navigation@4"
         }
       ],
       "scm/title": [
@@ -155,11 +187,40 @@
           "when": "editorHasSelection",
           "group": "0_wright@4"
         }
+      ],
+      "explorer/context": [
+        {
+          "command": "wright.addToChat",
+          "group": "2_workspace@1"
+        }
       ]
     },
     "configuration": {
       "title": "Wright",
       "properties": {
+        "wright.offlineMode": {
+          "type": "boolean",
+          "default": false,
+          "markdownDescription": "**Offline mode** — run everything on your local Ollama model, no cloud calls. Works with no internet and never uses your API quota. Requires Ollama installed."
+        },
+        "wright.privacy.sensitiveGlobs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "markdownDescription": "**Privacy routing** — glob patterns (e.g. `**/secrets/**`, `*.env`, `packages/private/**`). When a chat turn attaches or @-mentions a matching file, that turn is forced to your **local** model and never sent to any cloud provider."
+        },
+        "wright.bugWatcher.enabled": {
+          "type": "boolean",
+          "default": false,
+          "markdownDescription": "**Ambient bug-watcher** — after each manual save, your **local** model quietly scans the file for likely bugs and shows them as gentle 'Wright' hints in the Problems panel. Free (local only), never uses cloud quota. Requires Ollama."
+        },
+        "wright.bugWatcher.model": {
+          "type": "string",
+          "default": "qwen2.5-coder:14b",
+          "description": "Local Ollama model used by the ambient bug-watcher."
+        },
         "wright.nvidia.apiKey": {
           "type": "string",
           "default": "",
@@ -176,7 +237,7 @@
         "wright.fallback.ollama": {
           "type": "boolean",
           "default": true,
-          "description": "When every NVIDIA key is rate-limited, fall back to your local Ollama (free forever, no limits)."
+          "description": "When every cloud provider is rate-limited or unavailable, fall back to your local Ollama (free forever, no limits)."
         },
         "wright.fallback.ollamaModel": {
           "type": "string",
@@ -208,7 +269,138 @@
               "model"
             ]
           },
-          "markdownDescription": "Extra OpenAI-compatible fallback providers, tried in order after NVIDIA (before Ollama). Examples \u2014 Groq: `{\"name\":\"groq\",\"baseUrl\":\"https://api.groq.com/openai/v1\",\"apiKey\":\"gsk_\u2026\",\"model\":\"llama-3.3-70b-versatile\"}` \u00b7 Gemini free tier: `{\"name\":\"gemini\",\"baseUrl\":\"https://generativelanguage.googleapis.com/v1beta/openai\",\"apiKey\":\"AIza\u2026\",\"model\":\"gemini-2.0-flash\"}` \u00b7 Cerebras: `{\"name\":\"cerebras\",\"baseUrl\":\"https://api.cerebras.ai/v1\",\"apiKey\":\"csk-\u2026\",\"model\":\"llama-3.3-70b\"}`"
+          "markdownDescription": "Custom OpenAI-compatible providers appended to the failover chain (after first-class providers, before Ollama). Prefer Wright Settings → Providers for OpenRouter, Groq, Gemini, etc."
+        },
+        "wright.providers.openrouter.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Include OpenRouter in the chat picker and failover chain when an API key is set."
+        },
+        "wright.providers.openrouter.apiKey": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "OpenRouter API key from [openrouter.ai](https://openrouter.ai). Models appear as `openrouter:…` in the picker."
+        },
+        "wright.providers.openrouter.models": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "poolside/laguna-m.1:free",
+            "openai/gpt-oss-120b:free",
+            "nvidia/nemotron-3-super-120b-a12b:free",
+            "cohere/north-mini-code:free",
+            "openrouter/free"
+          ],
+          "description": "OpenRouter free coding models (must still be $0 on openrouter.ai/models). DeepSeek :free removed; Qwen :free retiring Jul 2026."
+        },
+        "wright.providers.deepseek.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Include DeepSeek in the chat picker and failover chain when an API key is set."
+        },
+        "wright.providers.deepseek.apiKey": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "DeepSeek API key from [platform.deepseek.com](https://platform.deepseek.com) — strong coding + reasoning."
+        },
+        "wright.providers.deepseek.models": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "deepseek-chat",
+            "deepseek-reasoner"
+          ],
+          "description": "DeepSeek model ids shown in the picker."
+        },
+        "wright.providers.groq.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Include Groq in the chat picker and failover chain when an API key is set."
+        },
+        "wright.providers.groq.apiKey": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Groq API key from [console.groq.com](https://console.groq.com)."
+        },
+        "wright.providers.groq.models": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "llama-3.3-70b-versatile",
+            "qwen/qwen3-32b"
+          ],
+          "description": "Groq model ids shown in the picker (Llama 3.3 70B / Qwen3 — strong free coding speed)."
+        },
+        "wright.providers.gemini.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Include Google Gemini in the chat picker and failover chain when an API key is set."
+        },
+        "wright.providers.gemini.apiKey": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Gemini API key from [aistudio.google.com](https://aistudio.google.com)."
+        },
+        "wright.providers.gemini.models": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "gemini-3.5-flash",
+            "gemini-3.1-flash-lite",
+            "gemini-3-flash-preview"
+          ],
+          "description": "Gemini model ids for the picker. Prefer 3.5 Flash — 2.5 Flash is blocked for new users; Pro is paid-only."
+        },
+        "wright.providers.cerebras.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Include Cerebras in the chat picker and failover chain when an API key is set."
+        },
+        "wright.providers.cerebras.apiKey": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Cerebras API key from [cloud.cerebras.ai](https://cloud.cerebras.ai)."
+        },
+        "wright.providers.cerebras.models": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "gpt-oss-120b",
+            "zai-glm-4.7",
+            "gemma-4-31b"
+          ],
+          "description": "Cerebras model ids for the picker. llama-3.3-70b / qwen-3-32b were deprecated — use gpt-oss-120b."
+        },
+        "wright.providers.mistral.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Include Mistral in the chat picker and failover chain when an API key is set."
+        },
+        "wright.providers.mistral.apiKey": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Mistral API key from [console.mistral.ai](https://console.mistral.ai)."
+        },
+        "wright.providers.mistral.models": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "codestral-latest",
+            "mistral-large-latest"
+          ],
+          "description": "Mistral model ids shown in the picker (Codestral for code, Large for reasoning)."
         },
         "wright.model.chat": {
           "type": "string",
@@ -229,7 +421,7 @@
         "wright.model.fast": {
           "type": "string",
           "default": "meta/llama-3.1-8b-instruct",
-          "description": "Cheap/fast model for lightweight tasks.",
+          "description": "Cheap/fast model for context compaction, inline edit, and commit messages.",
           "enum": [
             "meta/llama-3.1-8b-instruct",
             "meta/llama-3.3-70b-instruct",
@@ -253,6 +445,55 @@
             "meta/llama-4-maverick-17b-128e-instruct",
             "meta/llama-3.2-90b-vision-instruct"
           ]
+        },
+        "wright.routing.fast": {
+          "type": "string",
+          "default": "meta/llama-3.1-8b-instruct",
+          "markdownDescription": "**Auto** routing — model for light/read-only turns (Ask mode, small edits). Only used when the model picker is set to Auto; an explicitly picked model always wins.",
+          "enum": [
+            "meta/llama-3.1-8b-instruct",
+            "z-ai/glm-5.2",
+            "nvidia/nemotron-3-super-120b-a12b",
+            "meta/llama-3.3-70b-instruct"
+          ]
+        },
+        "wright.routing.balanced": {
+          "type": "string",
+          "default": "z-ai/glm-5.2",
+          "markdownDescription": "**Auto** routing — default model for normal agent turns.",
+          "enum": [
+            "z-ai/glm-5.2",
+            "mistralai/mistral-large-3-675b-instruct-2512",
+            "deepseek-ai/deepseek-v4-pro",
+            "moonshotai/kimi-k2.6",
+            "nvidia/nemotron-3-super-120b-a12b"
+          ]
+        },
+        "wright.routing.strong": {
+          "type": "string",
+          "default": "mistralai/mistral-large-3-675b-instruct-2512",
+          "markdownDescription": "**Auto** routing — primary model for big / multi-file / debug tasks. Should be a strong coder. (Defaults to the head of `routing.strongChain`.)",
+          "enum": [
+            "mistralai/mistral-large-3-675b-instruct-2512",
+            "z-ai/glm-5.2",
+            "deepseek-ai/deepseek-v4-pro",
+            "moonshotai/kimi-k2.6"
+          ]
+        },
+        "wright.routing.strongChain": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "mistralai/mistral-large-3-675b-instruct-2512",
+            "deepseek-ai/deepseek-v4-pro",
+            "z-ai/glm-5.2",
+            "moonshotai/kimi-k2.6",
+            "cerebras:zai-glm-4.7",
+            "openrouter:qwen/qwen3-coder:free"
+          ],
+          "markdownDescription": "Ordered **trustworthy failover chain** for strong/big tasks. When the primary is one of these and it's rate-limited or unavailable, Wright falls over to the next strong coder here **before** any weak/free model — so a hard task never silently drops to a shallow model. Use `provider:model` for cloud entries (e.g. `cerebras:zai-glm-4.7`)."
         },
         "wright.webSearch.provider": {
           "type": "string",
@@ -287,7 +528,35 @@
             "File edits run silently; shell commands ask (allowlisted ones run)",
             "Everything runs silently except deny-listed commands and protected paths"
           ],
-          "description": "How much Wright's agent can do without asking."
+          "description": "How much Wright's agent can do without asking (also in Settings → Permissions)."
+        },
+        "wright.permissionDefault": {
+          "type": "string",
+          "enum": [
+            "always-ask",
+            "allow-once",
+            "allow-always"
+          ],
+          "default": "always-ask",
+          "enumDescriptions": [
+            "Show the in-chat permission card for each sensitive action",
+            "After trust is granted, allow the rest of the chat session without asking",
+            "Full access — do not show the permission card"
+          ],
+          "description": "Default for the in-chat Allow always / Allow once / Always ask dialog."
+        },
+        "wright.commandRunTarget": {
+          "type": "string",
+          "enum": [
+            "terminal",
+            "sandbox"
+          ],
+          "default": "terminal",
+          "enumDescriptions": [
+            "Run shell commands in the visible Wright IDE terminal",
+            "Run shell commands in an invisible local sandbox process"
+          ],
+          "description": "Where Wright runs shell commands by default."
         },
         "wright.pricing.inputPer1M": {
           "type": "number",
@@ -330,7 +599,7 @@
             "meta/llama-3.3-70b-instruct",
             "meta/llama-3.1-8b-instruct"
           ],
-          "markdownDescription": "Models shown in the chat picker. Add or remove any NVIDIA NIM model id (must support tool calling for agent work \u2014 check with `pnpm verify -- <id>`). \"auto\" is always included."
+          "markdownDescription": "Models shown in the chat picker. Add or remove any NVIDIA NIM model id (must support tool calling for agent work — check with `pnpm verify -- <id>`). \"auto\" is always included."
         },
         "wright.defaultMode": {
           "type": "string",
@@ -348,6 +617,44 @@
           "type": "boolean",
           "default": false,
           "description": "Automatically keep all agent edits after each turn (skip the manual Keep all). Files remain revertible only until the turn ends."
+        },
+        "wright.ui.showBuiltinChat": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show the host IDE Chat next to Wright. Off only hides it while Wright is installed; disabling/uninstalling Wright restores built-in chat."
+        },
+        "wright.rules.alwaysAskFollowUps": {
+          "type": "boolean",
+          "default": false,
+          "description": "When a request is ambiguous, ask clarifying questions before making substantial changes."
+        },
+        "wright.rules.requireDeleteApproval": {
+          "type": "boolean",
+          "default": true,
+          "description": "Always ask before running delete commands (rm, rmdir, etc.), even in auto modes."
+        },
+        "wright.rules.noDriveByRefactors": {
+          "type": "boolean",
+          "default": true,
+          "description": "Only change what was asked — no unrelated cleanup or style rewrites."
+        },
+        "wright.rules.explainBeforeEdits": {
+          "type": "boolean",
+          "default": false,
+          "description": "Briefly state the plan before editing or creating files."
+        },
+        "wright.rules.items": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "markdownDescription": "Short custom rules the agent must follow on every turn. Prefer Wright Settings → Rules to edit these."
+        },
+        "wright.rules.custom": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Freeform standing instructions for the agent. Combined with project `.wrightrules` / `.cursorrules` when present."
         },
         "wright.mcp.servers": {
           "type": "object",
@@ -380,7 +687,7 @@
         "wright.ollama.url": {
           "type": "string",
           "default": "http://localhost:11434",
-          "markdownDescription": "Ollama server URL. Point this at a REMOTE Ollama (e.g. a rented GPU box: `http://your-server:11434`) to run big local models off-machine \u2014 the picker, downloads, and fallback all follow it."
+          "markdownDescription": "Ollama server URL. Point this at a REMOTE Ollama (e.g. a rented GPU box: `http://your-server:11434`) to run big local models off-machine — the picker, downloads, and fallback all follow it."
         }
       }
     }
@@ -408,5 +715,8 @@
     "react": "^18.3.0",
     "react-dom": "^18.3.0",
     "typescript": "^5.7.0"
+  },
+  "dependencies": {
+    "@vscode/codicons": "^0.0.45"
   }
 }

@@ -26,6 +26,10 @@ const webviewCtx = await esbuild.context({
   sourcemap: true,
   logLevel: "info",
   define: { "process.env.NODE_ENV": '"production"' },
+  // Codicon font: emit the ttf next to webview.css so its relative
+  // url() resolves inside the webview.
+  loader: { ".ttf": "file" },
+  assetNames: "[name]",
 });
 
 if (watch) {

@@ -1,22 +1,23 @@
 import * as vscode from "vscode";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { ModelClient, nvidiaProvider } from "@wright/core";
 import { getConfig } from "./config.js";
+import { buildFailoverClient, hasAnyCloudCredential } from "./providers.js";
 import { workspaceRoot } from "./workspace.js";
 
 const execFileP = promisify(execFile);
 
 /**
  * Git integration (Phase 11): generate a commit message from the staged
- * diff (fast model) and drop it into the Source Control input box.
+ * diff (fast model via multi-provider failover) and drop it into the
+ * Source Control input box.
  */
 export async function generateCommitMessage(): Promise<void> {
   const root = workspaceRoot();
   if (!root) return;
   const config = getConfig();
-  if (!config.apiKey) {
-    vscode.window.showWarningMessage("Wright: no NVIDIA API key configured.");
+  if (!hasAnyCloudCredential()) {
+    vscode.window.showWarningMessage("Wright: no API key configured. Add one in Wright Settings → Providers.");
     return;
   }
 
@@ -35,12 +36,12 @@ export async function generateCommitMessage(): Promise<void> {
     return;
   }
 
-  const client = new ModelClient(nvidiaProvider({ apiKeys: config.apiKeys, chatModel: config.fastModel }));
+  const { client, agentModel } = await buildFailoverClient(config.fastModel);
   const message = await vscode.window.withProgress(
     { location: vscode.ProgressLocation.SourceControl, title: "Wright: writing commit message…" },
     async () => {
       const result = await client.complete({
-        model: config.fastModel,
+        model: agentModel,
         messages: [
           {
             role: "system",
@@ -65,7 +66,6 @@ export async function generateCommitMessage(): Promise<void> {
   );
   if (!message) return;
 
-  // Drop it into the SCM input box via the built-in git extension.
   const gitExt = vscode.extensions.getExtension<{ getAPI(v: 1): { repositories: Array<{ inputBox: { value: string } }> } }>("vscode.git");
   const api = gitExt?.exports.getAPI(1);
   const repo = api?.repositories[0];

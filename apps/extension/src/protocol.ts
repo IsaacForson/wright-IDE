@@ -14,6 +14,8 @@ export interface FileAttachment {
   path?: string;
   /** Inline content for files dropped from outside the workspace. */
   content?: string;
+  /** Folder drops attach a listing instead of file contents. */
+  kind?: "file" | "dir";
 }
 
 /** Webview → extension */
@@ -23,17 +25,33 @@ export type WebviewToHost =
   | { type: "openSettings" }
   | { type: "manageModels" }
   | { type: "manageLocalModels" }
-  | { type: "executePlan" }
+  | { type: "executePlan"; steps?: string[] }
   | { type: "discardPlan" }
   | { type: "stop" }
   | { type: "newChat" }
   | { type: "setModel"; model: string }
   | { type: "setApprovalMode"; mode: "manual" | "auto-edit" | "auto" }
   | { type: "queryFiles"; query: string; token: number }
+  | { type: "queryWorkflows"; token: number }
+  | { type: "removeQueued"; id: string }
+  | { type: "clearQueue" }
+  /** Push the currently running command to the background (keeps running in the terminal). */
+  | { type: "backgroundCommand" }
   | { type: "planDecision"; usePlan: boolean }
+  | { type: "restoreCheckpoint"; id: string }
+  | { type: "secondOpinion" }
   | { type: "openFile"; path: string }
+  | { type: "summarizeChat" }
+  | { type: "askUserAnswer"; id: string; text: string }
+  | { type: "permissionDecision"; id: string; decision: "allow-always" | "allow-once" | "always-ask" | "deny" }
+  | { type: "setCommandRunTarget"; target: "terminal" | "sandbox" }
+  | { type: "revealTerminal" }
+  | { type: "rerunCommand"; id: string; target: "terminal" | "sandbox" }
   | { type: "copyText"; text: string }
   | { type: "applyCode"; code: string }
+  /** Resolve explorer/OS drop URIs into workspace attachments. */
+  | { type: "resolveDrops"; uris: string[] }
+  | { type: "pickAttachments" }
   | { type: "listSessions" }
   | { type: "openSession"; id: string }
   | { type: "deleteSession"; id: string }
@@ -54,7 +72,8 @@ export interface FileChangeItem {
 
 /** One entry in the rendered transcript. */
 export type UiItem =
-  | { kind: "text"; role: "user" | "assistant"; content: string; images?: string[]; files?: string[] }
+  | { kind: "text"; role: "user" | "assistant"; content: string; images?: string[]; files?: string[]; checkpointId?: string }
+  | { kind: "council"; status: "running" | "done"; question: string; answers: Array<{ label: string; text: string }> }
   | { kind: "thinking"; content: string; seconds: number }
   | { kind: "tool"; id: string; name: string; argsSummary: string; status: "running" | "ok" | "error" | "declined"; output?: string }
   /** A file being written live — code streams in as the model generates it. */
@@ -71,13 +90,20 @@ export type HostToWebview =
       changes: FileChangeItem[];
       planPending: boolean;
       approvalMode: "manual" | "auto-edit" | "auto";
+      permissionDefault?: "always-ask" | "allow-once" | "allow-always";
+      commandRunTarget?: "terminal" | "sandbox";
       sessionStats?: string;
       defaultMode: ChatMode;
+      /** 0–1 context fill for token-based models; undefined hides the meter (NVIDIA RPM). */
+      contextUsage?: number;
+      /** True when auto-compaction applies for this model. */
+      contextMeterEnabled?: boolean;
     }
   | { type: "attachSelection"; file: FileAttachment }
+  | { type: "attachImage"; dataUrl: string }
   | { type: "toggleHistory" }
   | { type: "chatCleared" }
-  | { type: "planReady" }
+  | { type: "planReady"; steps: string[] }
   | { type: "planSuggest" }
   | { type: "assistantStart" }
   | { type: "delta"; text: string }
@@ -85,11 +111,37 @@ export type HostToWebview =
   | { type: "thinkingDone"; seconds: number }
   | { type: "toolStart"; id: string; name: string; argsSummary: string }
   | { type: "toolDone"; id: string; status: "ok" | "error" | "declined"; output: string }
+  | { type: "toolOutput"; id: string; text: string }
+  | {
+      type: "permissionRequest";
+      id: string;
+      tool: string;
+      detail: string;
+      reason?: string;
+      /** Highlighted default from Settings → Permissions. */
+      preferred?: "always-ask" | "allow-once" | "allow-always";
+    }
+  | { type: "permissionCleared"; id: string }
   | { type: "writeCode"; id: string; path: string; code: string }
   | { type: "writeDone"; id: string; status: "ok" | "error" | "declined" }
   | { type: "changes"; changes: FileChangeItem[] }
   | { type: "fileHunks"; path: string; hunks: Array<{ header: string; lines: string[] }> }
   | { type: "fileList"; token: number; entries: Array<{ path: string; type: "file" | "dir" }> }
+  | { type: "workflowList"; token: number; entries: Array<{ name: string; description: string }> }
+  /** Prompts queued while the agent is busy (drained in order after each turn). */
+  | { type: "queue"; items: Array<{ id: string; text: string }> }
   | { type: "sessions"; sessions: Array<{ id: string; title: string; updatedAt: number; current: boolean }> }
   | { type: "turnDone"; stats?: string }
+  | { type: "contextUsage"; usage: number; enabled: boolean }
+  | { type: "summarizing"; active: boolean }
+  | {
+      type: "askUser";
+      id: string;
+      questions: Array<{
+        id: string;
+        prompt: string;
+        allow_multiple?: boolean;
+        options: Array<{ id: string; label: string; description?: string; recommended?: boolean }>;
+      }>;
+    }
   | { type: "error"; message: string };

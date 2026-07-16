@@ -11,6 +11,7 @@ import type { ProviderConfig } from "./provider.js";
 import { ModelError, errorFromResponse } from "./errors.js";
 import { parseSSE } from "./sse.js";
 import { withRetry, type RetryOptions } from "./retry.js";
+import { keyHealth } from "./keyHealth.js";
 
 export interface RequestOptions {
   signal?: AbortSignal;
@@ -25,6 +26,7 @@ interface StreamDelta {
     index: number;
     id?: string;
     function?: { name?: string; arguments?: string };
+    extra_content?: { google?: { thought_signature?: string } };
   }>;
 }
 
@@ -99,6 +101,7 @@ export class ModelClient {
       throw new ModelError("server", "Provider returned no choices");
     }
     const { reasoning_content, ...message } = choice.message;
+    ensureGeminiThoughtSignatures(message, this.provider);
     return {
       message,
       finishReason: choice.finish_reason ?? null,
@@ -168,6 +171,9 @@ export class ModelClient {
               name: tc.function?.name ?? "",
               arguments: tc.function?.arguments ?? "",
             },
+            ...(tc.extra_content?.google?.thought_signature
+              ? { extra_content: tc.extra_content }
+              : {}),
           };
           toolCalls.set(tc.index, call);
           yield { type: "tool_call_start", index: tc.index, id: call.id, name: call.function.name };
@@ -175,10 +181,19 @@ export class ModelClient {
             yield { type: "tool_call_delta", index: tc.index, id: call.id, name: call.function.name, text: call.function.arguments };
           }
         } else {
-          if (tc.function?.name) existing.function.name += tc.function.name;
+          if (tc.id) existing.id = tc.id;
+          if (tc.function?.name) {
+            // Never blindly append name fragments — Mistral (and some gateways)
+            // re-send or emit junk on later deltas, producing "list_dirнодорож".
+            existing.function.name = mergeStreamedToolName(existing.function.name, tc.function.name);
+          }
           if (tc.function?.arguments) {
             existing.function.arguments += tc.function.arguments;
             yield { type: "tool_call_delta", index: tc.index, id: existing.id, name: existing.function.name, text: tc.function.arguments };
+          }
+          // Signature usually arrives on the first frame; keep any later copy too.
+          if (tc.extra_content?.google?.thought_signature) {
+            existing.extra_content = tc.extra_content;
           }
         }
       }
@@ -201,6 +216,7 @@ export class ModelClient {
         tool_calls: [...toolCalls.entries()].sort(([a], [b]) => a - b).map(([, c]) => c),
       }),
     };
+    ensureGeminiThoughtSignatures(assembled, this.provider);
     yield {
       type: "done",
       result: {
@@ -236,7 +252,10 @@ export class ModelClient {
         : [undefined];
 
     const doFetch = (key: string | undefined, noRateLimitRetry: boolean) => {
-      const headers: Record<string, string> = { "Content-Type": "application/json" };
+      const headers: Record<string, string> = {
+        "Content-Type": "application/json",
+        ...this.provider.defaultHeaders,
+      };
       if (key) headers["Authorization"] = `Bearer ${key}`;
       return withRetry(
         async () => {
@@ -249,11 +268,23 @@ export class ModelClient {
           }
           if (!res.ok) {
             const body = await res.text().catch(() => "");
-            throw errorFromResponse(res.status, body, res.headers.get("retry-after"));
+            const err = errorFromResponse(res.status, body, res.headers.get("retry-after"));
+            if (err.kind === "rate_limit" && key) keyHealth.markLimited(key, err.retryAfter);
+            throw err;
           }
           return res;
         },
-        { ...opts.retry, signal: opts.signal, noRateLimitRetry },
+        {
+          ...opts.retry,
+          signal: opts.signal,
+          noRateLimitRetry,
+          onRetry: (err, attempt, delayMs) => {
+            if (err.kind === "rate_limit" && key) {
+              keyHealth.markLimited(key, err.retryAfter ?? Math.ceil(delayMs / 1000));
+            }
+            opts.retry?.onRetry?.(err, attempt, delayMs);
+          },
+        },
       );
     };
 
@@ -270,6 +301,7 @@ export class ModelClient {
         lastErr = err;
         const kind = err instanceof ModelError ? err.kind : undefined;
         if ((kind === "rate_limit" || kind === "auth") && !opts.signal?.aborted) {
+          if (kind === "rate_limit" && key) keyHealth.markLimited(key, (err as ModelError).retryAfter);
           this.keyIndex++; // advance for this loop and future calls
           this.provider.apiKeys && opts.retry?.onRetry?.(err as ModelError, tried + 1, 0);
           continue;
@@ -283,6 +315,37 @@ export class ModelClient {
       return doFetch(keys[this.keyIndex % keys.length], false);
     }
     throw lastErr;
+  }
+}
+
+/**
+ * Merge streamed tool-name deltas without concatenating unrelated junk.
+ * Progressive completion (`li` → `list_dir`) is kept; duplicate/shorter
+ * resends and garbage fragments are ignored.
+ */
+export function mergeStreamedToolName(current: string, incoming: string): string {
+  if (!incoming) return current;
+  if (!current) return incoming;
+  if (incoming === current) return current;
+  if (incoming.startsWith(current)) return incoming;
+  if (current.startsWith(incoming)) return current;
+  return current;
+}
+
+/**
+ * Gemini 3+ requires thought_signature on the first tool_call when continuing
+ * a tool loop. Preserve signatures from the API; if a proxy stripped them,
+ * fall back to Google's documented skip token so the request isn't rejected.
+ */
+function ensureGeminiThoughtSignatures(message: AssistantMessage, provider: ProviderConfig): void {
+  if (!/generativelanguage\.googleapis\.com/i.test(provider.baseUrl)) return;
+  const calls = message.tool_calls;
+  if (!calls?.length) return;
+  const first = calls[0]!;
+  if (!first.extra_content?.google?.thought_signature) {
+    first.extra_content = {
+      google: { thought_signature: "skip_thought_signature_validator" },
+    };
   }
 }
 

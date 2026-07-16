@@ -48,7 +48,8 @@ export async function withRetry<T>(fn: () => Promise<T>, opts: RetryOptions = {}
   throw lastErr;
 }
 
-function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+/** Abortable delay — shared by retry backoff and agent step-throttle. */
+export function sleep(ms: number, signal?: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
       signal?.removeEventListener("abort", onAbort);

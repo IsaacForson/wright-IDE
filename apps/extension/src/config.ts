@@ -4,6 +4,8 @@ import { join } from "node:path";
 
 import type { ApprovalMode } from "@wright/core";
 
+export type PermissionDefault = "always-ask" | "allow-once" | "allow-always";
+
 export interface WrightConfig {
   apiKey: string | undefined;
   /** Full key pool for automatic rotation on rate limits. */
@@ -12,8 +14,25 @@ export interface WrightConfig {
   fastModel: string;
   embedModel: string;
   visionModel: string;
+  /** Auto-routing tiers: which model the "Auto" picker uses per task shape. */
+  routing: {
+    fast: string;
+    balanced: string;
+    /** Head of the strong tier — the primary for big/agent/debug work. */
+    strong: string;
+    /**
+     * Ordered failover chain of TRUSTWORTHY strong coders/reasoners. When the
+     * primary is a member of this chain and it's unavailable, Wright falls over
+     * to the next strong model here BEFORE any weak/free provider — so a hard
+     * task never silently drops to a shallow model.
+     */
+    strongChain: string[];
+  };
   webSearch: { provider: "tavily" | "brave" | "duckduckgo"; apiKey: string | undefined };
   approvalMode: ApprovalMode;
+  /** Default stance for the in-chat permission card. */
+  permissionDefault: PermissionDefault;
+  commandRunTarget: "terminal" | "sandbox";
   /** USD per 1M tokens; 0 disables the cost estimate. */
   priceInPer1M: number;
   priceOutPer1M: number;
@@ -23,7 +42,30 @@ export interface WrightConfig {
   defaultMode: "agent" | "plan" | "debug" | "ask" | "multi";
   /** Automatically keep all agent edits after each turn. */
   autoKeep: boolean;
+  /** User rules from Settings → Rules (composed text for the system prompt). */
+  userRules?: string;
+  /** Always ask before delete-like shell commands. */
+  requireDeleteApproval: boolean;
+  /** Force every request to the local model — no cloud, works offline. */
+  offlineMode: boolean;
+  /** Globs whose involvement forces local-only routing (never sent to cloud). */
+  sensitiveGlobs: string[];
 }
+
+/**
+ * Trustworthy strong-tier failover chain (verified strong coders / deep
+ * reasoners, in preference order). Mistral Large 3 (41B active of 675B) leads;
+ * DeepSeek V4 Pro and GLM-5.2 back it up. Strong CLOUD coders come next so the
+ * chain survives even if NVIDIA is fully rate-limited, before any weak fallback.
+ */
+export const DEFAULT_STRONG_CHAIN = [
+  "mistralai/mistral-large-3-675b-instruct-2512",
+  "deepseek-ai/deepseek-v4-pro",
+  "z-ai/glm-5.2",
+  "moonshotai/kimi-k2.6",
+  "cerebras:zai-glm-4.7",
+  "openrouter:qwen/qwen3-coder:free",
+];
 
 export const DEFAULT_MODEL_LIST = [
   "z-ai/glm-5.2",
@@ -62,17 +104,66 @@ export function getConfig(): WrightConfig {
     fastModel: cfg.get<string>("model.fast") || "meta/llama-3.1-8b-instruct",
     embedModel: cfg.get<string>("model.embed") || "nvidia/nv-embedcode-7b-v1",
     visionModel: cfg.get<string>("model.vision") || "meta/llama-4-maverick-17b-128e-instruct",
+    routing: (() => {
+      const strongChain = (cfg.get<string[]>("routing.strongChain")?.filter(Boolean)?.length
+        ? cfg.get<string[]>("routing.strongChain")!.filter(Boolean)
+        : DEFAULT_STRONG_CHAIN);
+      return {
+        fast: cfg.get<string>("routing.fast") || cfg.get<string>("model.fast") || "meta/llama-3.1-8b-instruct",
+        balanced: cfg.get<string>("routing.balanced") || cfg.get<string>("model.chat") || "z-ai/glm-5.2",
+        // Explicit routing.strong wins; otherwise the head of the strong chain.
+        strong: cfg.get<string>("routing.strong") || strongChain[0]!,
+        strongChain,
+      };
+    })(),
     webSearch: {
       provider: (cfg.get<string>("webSearch.provider") as "tavily" | "brave" | "duckduckgo") || "duckduckgo",
       apiKey: cfg.get<string>("webSearch.apiKey")?.trim() || undefined,
     },
     approvalMode: (cfg.get<string>("approvalMode") as ApprovalMode) || "auto-edit",
+    permissionDefault: (cfg.get<string>("permissionDefault") as PermissionDefault) || "always-ask",
+    commandRunTarget: (cfg.get<string>("commandRunTarget") as "terminal" | "sandbox") || "terminal",
     priceInPer1M: cfg.get<number>("pricing.inputPer1M") ?? 0,
     priceOutPer1M: cfg.get<number>("pricing.outputPer1M") ?? 0,
     modelList: cfg.get<string[]>("models.list")?.filter(Boolean) ?? DEFAULT_MODEL_LIST,
     defaultMode: (cfg.get<string>("defaultMode") as WrightConfig["defaultMode"]) || "agent",
     autoKeep: cfg.get<boolean>("edits.autoKeep") ?? false,
+    userRules: composeUserRules(cfg),
+    requireDeleteApproval: cfg.get<boolean>("rules.requireDeleteApproval") ?? true,
+    offlineMode: cfg.get<boolean>("offlineMode") ?? false,
+    sensitiveGlobs: cfg.get<string[]>("privacy.sensitiveGlobs")?.filter(Boolean) ?? [],
   };
+}
+
+/** Build the Settings → Rules block injected into the agent system prompt. */
+export function composeUserRules(cfg = vscode.workspace.getConfiguration("wright")): string | undefined {
+  const parts: string[] = [];
+  if (cfg.get<boolean>("rules.alwaysAskFollowUps")) {
+    parts.push(
+      "- When you need the user to choose before you can proceed, call ask_user — that is the signal for selectable answer chips. Do not write those questions as markdown. Do not ask after you already fully answered. Do not turn summaries or file contents into options.",
+    );
+  }
+  if (cfg.get<boolean>("rules.requireDeleteApproval") ?? true) {
+    parts.push(
+      "- Never delete files, folders, or wipe data without explicit user confirmation in this conversation. Prefer asking first; do not run destructive rm/rmdir/del commands on your own initiative.",
+    );
+  }
+  if (cfg.get<boolean>("rules.noDriveByRefactors") ?? true) {
+    parts.push(
+      "- Only change what was asked. Do not refactor, rename, or “clean up” unrelated code, formatting, or files.",
+    );
+  }
+  if (cfg.get<boolean>("rules.explainBeforeEdits")) {
+    parts.push("- Before editing or creating files, briefly state what you plan to change and why (one or two sentences).");
+  }
+  for (const item of cfg.get<string[]>("rules.items") ?? []) {
+    const t = item.trim().replace(/^[-*•]\s*/, "");
+    if (t) parts.push(`- ${t}`);
+  }
+  const custom = cfg.get<string>("rules.custom")?.trim();
+  if (custom) parts.push(custom);
+  if (parts.length === 0) return undefined;
+  return parts.join("\n").slice(0, 12_000);
 }
 
 function readWorkspaceDotEnv(key: string): string | undefined {

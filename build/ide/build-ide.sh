@@ -55,13 +55,12 @@ if [ ! -d "$APP" ]; then
   exit 1
 fi
 
-# --- 5. Bake the Wright extension in as a built-in, remove Copilot ---
+# --- 5. Bake the Wright extension in as a built-in (keep Copilot — Wright is a Chat tab beside it) ---
 echo "==> Bundling Wright extension into the app"
 BUILTIN="$APP/Contents/Resources/app/extensions/wright.wright-extension"
 rm -rf "$BUILTIN"
 mkdir -p "$BUILTIN"
 cp -R "$ROOT/apps/extension/package.json" "$ROOT/apps/extension/dist" "$ROOT/apps/extension/media" "$BUILTIN/"
-rm -rf "$APP/Contents/Resources/app/extensions/copilot"
 node "$ROOT/build/ide/patch-app-strings.mjs" "$APP"
 
 # --- 6. Ad-hoc sign so Gatekeeper allows it locally ---

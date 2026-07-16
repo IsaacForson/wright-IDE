@@ -1,0 +1,306 @@
+/**
+ * Multi-provider config + failover chain builder for the extension.
+ * Shared by chat agent, inline edit, and commit message.
+ */
+
+import * as vscode from "vscode";
+import {
+  CLOUD_PROVIDER_IDS,
+  FailoverModelClient,
+  ModelClient,
+  PROVIDER_CATALOG,
+  buildProviderConfig,
+  formatModelRef,
+  parseModelRef,
+  type CloudProviderId,
+  type FailoverTarget,
+} from "@wright/core";
+import { getConfig } from "./config.js";
+import { ensureOllamaRunning, ollamaOpenAiBase } from "./ollama.js";
+
+export interface CloudProviderState {
+  id: CloudProviderId;
+  name: string;
+  enabled: boolean;
+  apiKey: string | undefined;
+  models: string[];
+  signupHint: string;
+  pickerHint: string;
+}
+
+export interface CustomFallbackProvider {
+  name: string;
+  baseUrl: string;
+  apiKey?: string;
+  model: string;
+}
+
+/** OpenRouter :free slugs that 404, hang, or are retiring as of July 2026. */
+const DEAD_OPENROUTER_FREE = new Set([
+  "deepseek/deepseek-chat-v3-0324:free",
+  "deepseek/deepseek-r1-0528:free",
+  "deepseek/deepseek-r1:free",
+  "deepseek/deepseek-chat-v3:free",
+  "deepseek/deepseek-chat:free",
+  "qwen/qwen3-coder:free", // 0% uptime / hangs; retires Jul 19 2026
+  "qwen/qwen3-next-80b-a3b-instruct:free", // retires Jul 19 2026
+]);
+
+/** Gemini ids blocked for new users, paid-only, or shut down (July 2026). */
+const DEAD_GEMINI = new Set([
+  "gemini-2.5-flash", // "no longer available to new users"
+  "gemini-2.5-pro", // paid-only; free keys hang / fail
+  "gemini-2.5-flash-lite",
+  "gemini-2.0-flash",
+  "gemini-2.0-flash-lite",
+  "gemini-1.5-pro",
+  "gemini-1.5-flash",
+]);
+
+/** Cerebras ids removed from public endpoints (July 2026). */
+const DEAD_CEREBRAS = new Set([
+  "llama-3.3-70b",
+  "qwen-3-32b",
+  "llama3.1-8b",
+  "llama3.1-70b",
+  "qwen-3-235b-a22b",
+  "qwen-3-235b-a22b-instruct-2507",
+  "qwen-3-235b-a22b-thinking-2507",
+  "qwen-3-coder-480b",
+  "llama-4-scout-17b-16e-instruct",
+  "llama-4-maverick-17b-128e-instruct",
+  "deepseek-r1-distill-llama-70b",
+]);
+
+const DEAD_MODELS_BY_PROVIDER: Partial<Record<CloudProviderId, Set<string>>> = {
+  openrouter: DEAD_OPENROUTER_FREE,
+  gemini: DEAD_GEMINI,
+  cerebras: DEAD_CEREBRAS,
+};
+
+/** Read enabled cloud providers with keys + model lists from settings. */
+export function getCloudProviders(): CloudProviderState[] {
+  const cfg = vscode.workspace.getConfiguration("wright");
+  return CLOUD_PROVIDER_IDS.map((id) => {
+    const catalog = PROVIDER_CATALOG[id]!;
+    const enabled = cfg.get<boolean>(`providers.${id}.enabled`) ?? true;
+    const apiKey = cfg.get<string>(`providers.${id}.apiKey`)?.trim() || undefined;
+    let models = cfg.get<string[]>(`providers.${id}.models`)?.filter(Boolean) ?? [...catalog.suggestedModels];
+    const dead = DEAD_MODELS_BY_PROVIDER[id];
+    if (dead) {
+      const cleaned = models.filter((m) => !dead.has(m));
+      if (cleaned.length !== models.length) {
+        models = cleaned.length ? cleaned : [...catalog.suggestedModels];
+        // Persist migration so Manage models / picker stay in sync.
+        void cfg.update(`providers.${id}.models`, models, vscode.ConfigurationTarget.Global);
+      }
+    }
+    return {
+      id,
+      name: catalog.name,
+      enabled,
+      apiKey,
+      models: models.length ? models : catalog.suggestedModels,
+      signupHint: catalog.signupHint,
+      pickerHint: catalog.pickerHint,
+    };
+  });
+}
+
+/** Providers that can actually be called (enabled + has api key). */
+export function getReadyCloudProviders(): CloudProviderState[] {
+  return getCloudProviders().filter((p) => p.enabled && !!p.apiKey);
+}
+
+/**
+ * Pick up to `n` DIVERSE model refs for a council/second-opinion, preferring
+ * different providers than `exclude`. Falls back to other NVIDIA models.
+ */
+export function pickCouncilModels(exclude: string, n = 2): string[] {
+  const config = getConfig();
+  const excludeProvider = parseModelRef(exclude === "auto" ? config.chatModel : exclude).providerId;
+  const picks: string[] = [];
+  // One strong model per OTHER ready cloud provider first (max diversity).
+  for (const p of getReadyCloudProviders()) {
+    if (p.id === excludeProvider || !p.models[0]) continue;
+    picks.push(formatModelRef(p.id, p.models[0]));
+  }
+  // Then other NVIDIA models (if NVIDIA isn't the excluded provider, or we still need more).
+  if (config.apiKeys.length) {
+    for (const m of config.modelList) {
+      if (picks.length >= n + 2) break;
+      const ref = m; // bare NIM id
+      if (ref !== exclude && !picks.includes(ref)) picks.push(ref);
+    }
+  }
+  return picks.slice(0, n);
+}
+
+export function getCustomFallbackProviders(): CustomFallbackProvider[] {
+  const raw =
+    vscode.workspace.getConfiguration("wright").get<CustomFallbackProvider[]>("fallback.providers") ?? [];
+  return raw.filter((p) => p?.baseUrl && p?.model);
+}
+
+/**
+ * Model ids for the chat picker: auto + NVIDIA list + prefixed cloud models
+ * (only when a key is set) + ollama:* locals.
+ */
+export function buildPickerModels(nvidiaList: string[], localOllama: string[]): string[] {
+  const cloud = getReadyCloudProviders().flatMap((p) =>
+    p.models.map((m) => formatModelRef(p.id, m)),
+  );
+  return ["auto", ...nvidiaList, ...cloud, ...localOllama.map((m) => `ollama:${m}`)];
+}
+
+/** Usage reporter wired by extension.ts; attributes tokens to the real provider. */
+let usageReporter: import("@wright/core").UsageReporter | undefined;
+export function setUsageReporter(fn: import("@wright/core").UsageReporter): void {
+  usageReporter = fn;
+}
+
+function onFailoverStatus(from: string, to: string): void {
+  vscode.window.setStatusBarMessage(`Wright: ${from} unavailable → switched to ${to}`, 6_000);
+}
+
+function targetForCloud(p: CloudProviderState, model: string): FailoverTarget {
+  return {
+    name: p.name,
+    model,
+    client: new ModelClient(
+      buildProviderConfig(p.id, { apiKey: p.apiKey, model }),
+    ),
+  };
+}
+
+function targetForNvidia(model: string): FailoverTarget {
+  const config = getConfig();
+  return {
+    name: "nvidia",
+    model,
+    client: new ModelClient(
+      buildProviderConfig("nvidia", { apiKeys: config.apiKeys, apiKey: config.apiKey, model }),
+    ),
+  };
+}
+
+function targetForCustom(p: CustomFallbackProvider): FailoverTarget {
+  return {
+    name: p.name || p.baseUrl,
+    model: p.model,
+    client: new ModelClient(
+      buildProviderConfig(p.name || "custom", {
+        apiKey: p.apiKey,
+        model: p.model,
+        baseUrl: p.baseUrl,
+        name: p.name || "custom",
+      }),
+    ),
+  };
+}
+
+async function targetForOllama(model: string, requireUp: boolean): Promise<FailoverTarget | undefined> {
+  if (requireUp) {
+    if (!(await ensureOllamaRunning())) return undefined;
+  }
+  return {
+    name: "ollama (local)",
+    model,
+    client: new ModelClient(
+      buildProviderConfig("ollama", {
+        model,
+        baseUrl: ollamaOpenAiBase(),
+        name: "Ollama",
+      }),
+    ),
+  };
+}
+
+/**
+ * Build an ordered failover client for a picker model ref (`auto`, bare NIM id,
+ * `groq:…`, `ollama:…`, etc.).
+ */
+export async function buildFailoverClient(
+  modelRef: string,
+  opts: { requireOllamaIfPrimary?: boolean; forceLocal?: boolean } = {},
+): Promise<{ client: FailoverModelClient; agentModel: string; targets: FailoverTarget[] }> {
+  const config = getConfig();
+  const wcfg = vscode.workspace.getConfiguration("wright");
+  const ollamaFallback = wcfg.get<boolean>("fallback.ollama") ?? true;
+  const ollamaFallbackModel = wcfg.get<string>("fallback.ollamaModel") || "qwen2.5-coder:14b";
+  const ready = getReadyCloudProviders();
+  const customs = getCustomFallbackProviders();
+  const targets: FailoverTarget[] = [];
+
+  // Offline mode / privacy routing: local-only, no cloud in the chain.
+  if (opts.forceLocal) {
+    const localModel = modelRef.startsWith("ollama:") ? parseModelRef(modelRef).model : ollamaFallbackModel;
+    const local = await targetForOllama(localModel, true);
+    if (!local) {
+      throw new Error(
+        "Wright: local-only mode is on but Ollama isn't reachable. Install/start Ollama (ollama.com), or turn off Offline mode.",
+      );
+    }
+    const client = new FailoverModelClient([local], onFailoverStatus, usageReporter);
+    return { client, agentModel: localModel, targets: [local] };
+  }
+
+  // Resolve "auto" to the configured NVIDIA chat model (bare id).
+  const resolvedRef = modelRef === "auto" ? config.chatModel : modelRef;
+  const { providerId, model } = parseModelRef(resolvedRef);
+  let agentModel = model;
+
+  if (providerId === "ollama") {
+    agentModel = model;
+    const primary = await targetForOllama(agentModel, opts.requireOllamaIfPrimary !== false);
+    if (!primary) {
+      throw new Error("Ollama isn't reachable — install/start it (or fix wright.ollama.url), or pick a cloud model.");
+    }
+    targets.push(primary);
+    if (config.apiKeys.length) targets.push(targetForNvidia(config.chatModel));
+    for (const p of ready) targets.push(targetForCloud(p, p.models[0]!));
+    for (const p of customs) targets.push(targetForCustom(p));
+  } else if (providerId === "nvidia") {
+    agentModel = model;
+    targets.push(targetForNvidia(agentModel));
+    for (const p of ready) targets.push(targetForCloud(p, p.models[0]!));
+    for (const p of customs) targets.push(targetForCustom(p));
+    if (ollamaFallback) {
+      const ol = await targetForOllama(ollamaFallbackModel, false);
+      if (ol) targets.push(ol);
+    }
+  } else {
+    // Named cloud provider as primary.
+    const primary = ready.find((p) => p.id === providerId);
+    if (!primary) {
+      throw new Error(
+        `Wright: provider "${providerId}" is not enabled or has no API key. Open Wright Settings → Providers.`,
+      );
+    }
+    agentModel = model;
+    targets.push(targetForCloud(primary, agentModel));
+    if (config.apiKeys.length) targets.push(targetForNvidia(config.chatModel));
+    for (const p of ready) {
+      if (p.id === providerId) continue;
+      targets.push(targetForCloud(p, p.models[0]!));
+    }
+    for (const p of customs) targets.push(targetForCustom(p));
+    if (ollamaFallback) {
+      const ol = await targetForOllama(ollamaFallbackModel, false);
+      if (ol) targets.push(ol);
+    }
+  }
+
+  if (targets.length === 0) {
+    throw new Error("Wright: no providers configured. Add an API key in Wright Settings.");
+  }
+
+  const client = new FailoverModelClient(targets, onFailoverStatus, usageReporter);
+  return { client, agentModel, targets };
+}
+
+/** True if any cloud or NVIDIA key can serve a request. */
+export function hasAnyCloudCredential(): boolean {
+  const config = getConfig();
+  return config.apiKeys.length > 0 || getReadyCloudProviders().length > 0;
+}

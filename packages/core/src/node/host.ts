@@ -1,7 +1,7 @@
 import { promises as fs } from "node:fs";
 import { spawn } from "node:child_process";
 import * as path from "node:path";
-import type { CommandResult, DirEntry, SearchMatch, WorkspaceHost } from "../tools.js";
+import type { CommandResult, DirEntry, RunCommandOptions, SearchMatch, WorkspaceHost } from "../tools.js";
 
 /**
  * Node implementation of WorkspaceHost, shared by the CLI and the VS Code
@@ -135,27 +135,75 @@ export class NodeWorkspaceHost implements WorkspaceHost {
     return matches;
   }
 
-  runCommand(command: string, signal?: AbortSignal): Promise<CommandResult> {
+  runCommand(command: string, opts?: RunCommandOptions): Promise<CommandResult> {
+    const signal = opts?.signal;
+    const onChunk = opts?.onChunk;
     return new Promise((resolve, reject) => {
-      const proc = spawn(command, { cwd: this.root, shell: true });
+      // detached → own process group, so killing -pid takes down grandchildren
+      // too (npm → node dev server), not just the wrapper shell.
+      const proc = spawn(command, { cwd: this.root, shell: true, detached: true });
       let stdout = "";
       let stderr = "";
       let settled = false;
 
+      const killTree = () => {
+        try {
+          if (proc.pid) process.kill(-proc.pid, "SIGKILL");
+          else proc.kill("SIGKILL");
+        } catch {
+          proc.kill("SIGKILL");
+        }
+      };
+
+      // Background mode: give it a short window to boot, then hand control
+      // back with the output so far — the process keeps running detached.
+      let bgTimer: ReturnType<typeof setTimeout> | undefined;
+      if (opts?.background) {
+        bgTimer = setTimeout(() => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          signal?.removeEventListener("abort", onAbort);
+          proc.stdout.removeAllListeners("data");
+          proc.stderr.removeAllListeners("data");
+          proc.unref();
+          resolve({
+            stdout:
+              stdout +
+              "\n\n[Started in the background and still running. Continue with the next step — do NOT wait for it to exit.]",
+            stderr,
+            exitCode: 0,
+          });
+        }, 5_000);
+      }
+
       const timer = setTimeout(() => {
         stderr += `\n[command timed out after ${COMMAND_TIMEOUT_MS / 1000}s and was killed]`;
-        proc.kill("SIGKILL");
+        onChunk?.(`\n[command timed out after ${COMMAND_TIMEOUT_MS / 1000}s and was killed]`);
+        killTree();
       }, COMMAND_TIMEOUT_MS);
 
-      const onAbort = () => proc.kill("SIGKILL");
+      const onAbort = () => {
+        if (bgTimer) clearTimeout(bgTimer);
+        killTree();
+      };
       signal?.addEventListener("abort", onAbort, { once: true });
 
-      proc.stdout.on("data", (d: Buffer) => (stdout += d));
-      proc.stderr.on("data", (d: Buffer) => (stderr += d));
+      proc.stdout.on("data", (d: Buffer) => {
+        const text = d.toString();
+        stdout += text;
+        onChunk?.(text);
+      });
+      proc.stderr.on("data", (d: Buffer) => {
+        const text = d.toString();
+        stderr += text;
+        onChunk?.(text);
+      });
       proc.on("error", (err) => {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
+        if (bgTimer) clearTimeout(bgTimer);
         signal?.removeEventListener("abort", onAbort);
         reject(err);
       });
@@ -163,6 +211,7 @@ export class NodeWorkspaceHost implements WorkspaceHost {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
+        if (bgTimer) clearTimeout(bgTimer);
         signal?.removeEventListener("abort", onAbort);
         resolve({ stdout, stderr, exitCode: code });
       });

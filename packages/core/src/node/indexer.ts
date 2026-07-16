@@ -18,7 +18,7 @@ const execFileP = promisify(execFile);
  * extension share it and restarts are incremental.
  */
 
-const EMBED_BATCH = 24;
+const EMBED_BATCH = 32; // NVIDIA embeddings accept an input[] — pack chunks, not 1 req/chunk
 const MAX_FILE_BYTES = 200_000;
 const MAX_FILES = 4_000;
 const TEXT_EXTENSIONS = new Set([
@@ -27,6 +27,26 @@ const TEXT_EXTENSIONS = new Set([
   "toml", "css", "scss", "html", "vue", "svelte", "sql", "graphql", "proto", "txt",
 ]);
 const SKIP_DIRS = new Set(["node_modules", ".git", "dist", "out", "build", ".next", "coverage", "__pycache__", ".venv", "vendor"]);
+/** Lockfiles / generated dumps — huge and useless for semantic code search. */
+const SKIP_BASENAMES = new Set([
+  "package-lock.json",
+  "pnpm-lock.yaml",
+  "yarn.lock",
+  "bun.lock",
+  "bun.lockb",
+  "cargo.lock",
+  "poetry.lock",
+  "composer.lock",
+  "gemfile.lock",
+  "go.sum",
+]);
+
+function shouldSkipFile(rel: string): boolean {
+  const base = path.basename(rel).toLowerCase();
+  if (SKIP_BASENAMES.has(base)) return true;
+  if (base.endsWith(".min.js") || base.endsWith(".min.css") || base.endsWith(".map")) return true;
+  return false;
+}
 
 export interface IndexProgress {
   phase: "scanning" | "embedding" | "done";
@@ -207,6 +227,7 @@ export class Indexer {
       const ext = path.extname(rel).slice(1).toLowerCase();
       if (!TEXT_EXTENSIONS.has(ext)) continue;
       if (rel.split("/").some((seg) => SKIP_DIRS.has(seg))) continue;
+      if (shouldSkipFile(rel)) continue;
       try {
         const stat = await fs.stat(path.join(this.root, rel));
         if (stat.size > MAX_FILE_BYTES || !stat.isFile()) continue;

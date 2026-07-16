@@ -1,5 +1,7 @@
 import * as vscode from "vscode";
+import { keyHealth } from "@wright/core";
 import { DEFAULT_MODEL_LIST } from "./config.js";
+import { applyBuiltinChatVisibility, openBuiltinChatPanel } from "./builtinChat.js";
 
 /**
  * Cursor-style settings editor: a full-page webview with a section sidebar,
@@ -7,17 +9,27 @@ import { DEFAULT_MODEL_LIST } from "./config.js";
  * in the Wright IDE and in the standalone extension.
  */
 
-type FieldKind = "toggle" | "select" | "text" | "password" | "number" | "stringlist" | "json";
+type FieldKind = "toggle" | "select" | "text" | "password" | "number" | "stringlist" | "json" | "textarea";
 
 interface Field {
-  key: string; // configuration key relative to "wright."
+  key: string; // configuration key relative to configSection (default "wright")
   label: string;
   desc: string;
   kind: FieldKind;
   options?: string[]; // for select
+  /** Display labels for select options (same order as options). */
+  optionLabels?: string[];
   placeholder?: string;
   /** select options come from the current models.list value */
   optionsFromModelList?: boolean;
+  /** VS Code config section (default "wright") */
+  configSection?: string;
+  /** For toggles: UI on means the stored boolean is false (e.g. chat.disableAIFeatures) */
+  invert?: boolean;
+  /** Show rate-limit health dots / countdown on stringlist tags (NVIDIA key pool). */
+  keyHealth?: boolean;
+  /** textarea rows hint */
+  rows?: number;
 }
 
 interface Section {
@@ -39,13 +51,90 @@ const SECTIONS: Section[] = [
         desc: "Mode the chat starts in",
       },
       {
-        key: "approvalMode", label: "Approval Mode", kind: "select",
-        options: ["manual", "auto-edit", "auto"],
-        desc: "How much the agent can do without asking. manual: approve everything · auto-edit: edits run, commands ask · auto: everything runs except deny-listed actions",
-      },
-      {
         key: "edits.autoKeep", label: "Auto-keep Edits", kind: "toggle",
         desc: "Automatically keep all agent edits after each turn (skip the manual Keep all)",
+      },
+      {
+        key: "ui.showBuiltinChat",
+        label: "Built-in IDE Chat",
+        kind: "toggle",
+        desc: "Show the host Chat icon on the right next to Wright. Off only hides it while Wright is installed — uninstalling Wright always restores built-in chat",
+      },
+    ],
+  },
+  {
+    id: "permissions",
+    title: "Permissions",
+    icon: "shield",
+    fields: [
+      {
+        key: "permissionDefault",
+        label: "In-chat permission default",
+        kind: "select",
+        options: ["always-ask", "allow-once", "allow-always"],
+        optionLabels: ["Always ask", "Allow once (session)", "Allow always"],
+        desc: "Default for the in-chat Allow dialog. Always ask: prompt each time · Allow once: trust the rest of the chat session · Allow always: full access (no prompts)",
+      },
+      {
+        key: "approvalMode",
+        label: "Approval mode",
+        kind: "select",
+        options: ["manual", "auto-edit", "auto"],
+        optionLabels: ["Manual", "Auto-edit", "Auto"],
+        desc: "What can run without the permission card. Manual: ask for edits and commands · Auto-edit: edits run, commands ask · Auto: run unless deny-listed (still respects In-chat permission default)",
+      },
+      {
+        key: "commandRunTarget",
+        label: "Command run target",
+        kind: "select",
+        options: ["terminal", "sandbox"],
+        optionLabels: ["IDE terminal", "Sandbox"],
+        desc: "Where shell commands run by default. Terminal: visible Wright IDE terminal · Sandbox: invisible local process",
+      },
+    ],
+  },
+  {
+    id: "rules",
+    title: "Rules",
+    icon: "law",
+    fields: [
+      {
+        key: "rules.alwaysAskFollowUps",
+        label: "Always ask follow-ups",
+        kind: "toggle",
+        desc: "When a request is ambiguous, ask clarifying questions (ask_user) before acting — not after answering, and never turn summaries into option chips",
+      },
+      {
+        key: "rules.requireDeleteApproval",
+        label: "Confirm before deleting",
+        kind: "toggle",
+        desc: "Always ask before running delete commands (rm, rmdir, etc.), even in auto modes",
+      },
+      {
+        key: "rules.noDriveByRefactors",
+        label: "No drive-by refactors",
+        kind: "toggle",
+        desc: "Only change what was asked — no unrelated cleanup or style rewrites",
+      },
+      {
+        key: "rules.explainBeforeEdits",
+        label: "Explain before editing",
+        kind: "toggle",
+        desc: "Briefly state the plan before editing or creating files",
+      },
+      {
+        key: "rules.items",
+        label: "Custom rules",
+        kind: "stringlist",
+        desc: "Short rules the agent must follow. Type a rule and press Enter to add. Example: Prefer TypeScript over JavaScript",
+      },
+      {
+        key: "rules.custom",
+        label: "Additional rules (freeform)",
+        kind: "textarea",
+        rows: 8,
+        placeholder: "Write longer standing instructions for Wright…",
+        desc: "Freeform instructions appended to every agent turn. Project rules from .wrightrules / .cursorrules in the workspace are also applied.",
       },
     ],
   },
@@ -54,31 +143,56 @@ const SECTIONS: Section[] = [
     title: "Models",
     icon: "chip",
     fields: [
-      { key: "model.chat", label: "Chat / Agent Model", kind: "select", optionsFromModelList: true, desc: "Primary model for chat and the agent. Must support tool calling" },
-      { key: "model.fast", label: "Fast Model", kind: "select", optionsFromModelList: true, desc: "Cheap/fast model for lightweight tasks (inline edit, commit messages)" },
-      { key: "model.vision", label: "Vision Model", kind: "select", options: ["meta/llama-4-maverick-17b-128e-instruct", "meta/llama-3.2-90b-vision-instruct"], desc: "Multimodal model used when a chat message includes an image" },
-      { key: "model.embed", label: "Embedding Model", kind: "select", options: ["nvidia/nv-embedcode-7b-v1"], desc: "Embedding model for codebase indexing (semantic search)" },
-      { key: "models.list", label: "Model Picker List", kind: "stringlist", desc: "Models shown in the chat picker. Any NVIDIA NIM model id (must support tool calling for agent work)" },
+      { key: "model.chat", label: "Default Chat Model (NVIDIA)", kind: "select", optionsFromModelList: true, desc: "Used for Auto and as NVIDIA's failover model. Prefer picking a provider model in the chat picker for primary" },
+      { key: "model.fast", label: "Fast Model (NVIDIA)", kind: "select", optionsFromModelList: true, desc: "Cheap/fast model for context compaction, inline edit, and commit messages" },
+      { key: "model.vision", label: "Vision Model", kind: "select", options: ["meta/llama-4-maverick-17b-128e-instruct", "meta/llama-3.2-90b-vision-instruct"], desc: "Multimodal model used when a chat message includes an image (NVIDIA)" },
+      { key: "model.embed", label: "Embedding Model", kind: "select", options: ["nvidia/nv-embedcode-7b-v1"], desc: "Embedding model for codebase indexing — still NVIDIA for this release" },
     ],
   },
   {
     id: "keys",
-    title: "API Keys",
+    title: "NVIDIA",
     icon: "key",
     fields: [
-      { key: "nvidia.apiKey", label: "NVIDIA API Key", kind: "password", placeholder: "nvapi-…", desc: "From build.nvidia.com. If empty, Wright falls back to the NVIDIA_API_KEY env var, then a .env at the workspace root" },
-      { key: "nvidia.apiKeys", label: "Additional Keys (rotation)", kind: "stringlist", desc: "Extra keys rotated automatically when a request hits a rate limit (429). Add several free-tier keys to raise effective throughput" },
+      { key: "nvidia.apiKey", label: "NVIDIA API Key", kind: "password", placeholder: "nvapi-…", desc: "From build.nvidia.com. If empty, Wright falls back to the NVIDIA_API_KEY env var, then a .env at the workspace root. Bare model ids in the picker use NVIDIA." },
+      { key: "nvidia.apiKeys", label: "Additional Keys (rotation)", kind: "stringlist", keyHealth: true, desc: "Extra keys rotated on 429. Green = healthy · yellow/red = cooling down with countdown" },
+      { key: "models.list", label: "NVIDIA Models in Picker", kind: "stringlist", desc: "NVIDIA NIM model ids shown in the chat picker (unprefixed)" },
+    ],
+  },
+  {
+    id: "providers",
+    title: "Providers",
+    icon: "cloud",
+    fields: [
+      { key: "providers.openrouter.enabled", label: "OpenRouter", kind: "toggle", desc: "Free key at openrouter.ai — Laguna / gpt-oss / Nemotron (DeepSeek & Qwen :free are dead/retiring)" },
+      { key: "providers.openrouter.apiKey", label: "OpenRouter API Key", kind: "password", placeholder: "sk-or-…", desc: "Required to use OpenRouter as primary or failover" },
+      { key: "providers.openrouter.models", label: "OpenRouter Models", kind: "stringlist", desc: "Free coding models for the picker (must still be $0 — check openrouter.ai/models)" },
+      { key: "providers.deepseek.enabled", label: "DeepSeek", kind: "toggle", desc: "platform.deepseek.com — among the strongest coding + reasoning APIs" },
+      { key: "providers.deepseek.apiKey", label: "DeepSeek API Key", kind: "password", placeholder: "sk-…", desc: "Required to use DeepSeek as primary or failover" },
+      { key: "providers.deepseek.models", label: "DeepSeek Models", kind: "stringlist", desc: "deepseek-chat (coding) · deepseek-reasoner (hard reasoning)" },
+      { key: "providers.groq.enabled", label: "Groq", kind: "toggle", desc: "Free key at console.groq.com — Llama 3.3 70B / Qwen3 at very high speed" },
+      { key: "providers.groq.apiKey", label: "Groq API Key", kind: "password", placeholder: "gsk_…", desc: "Required to use Groq as primary or failover" },
+      { key: "providers.groq.models", label: "Groq Models", kind: "stringlist", desc: "Model ids for the picker" },
+      { key: "providers.gemini.enabled", label: "Google Gemini", kind: "toggle", desc: "Free key at aistudio.google.com — use 3.5 Flash (2.5 blocked for new keys; Pro is paid-only)" },
+      { key: "providers.gemini.apiKey", label: "Gemini API Key", kind: "password", placeholder: "AIza…", desc: "Required to use Gemini as primary or failover" },
+      { key: "providers.gemini.models", label: "Gemini Models", kind: "stringlist", desc: "Prefer gemini-3.5-flash / gemini-3.1-flash-lite" },
+      { key: "providers.cerebras.enabled", label: "Cerebras", kind: "toggle", desc: "Free key at cloud.cerebras.ai — gpt-oss-120b / GLM 4.7 (Llama 3.3 / Qwen 3 deprecated)" },
+      { key: "providers.cerebras.apiKey", label: "Cerebras API Key", kind: "password", placeholder: "csk-…", desc: "Required to use Cerebras as primary or failover" },
+      { key: "providers.cerebras.models", label: "Cerebras Models", kind: "stringlist", desc: "Prefer gpt-oss-120b — llama-3.3-70b / qwen-3-32b were removed" },
+      { key: "providers.mistral.enabled", label: "Mistral", kind: "toggle", desc: "Experiment tier at console.mistral.ai — Codestral for code, Large for reasoning" },
+      { key: "providers.mistral.apiKey", label: "Mistral API Key", kind: "password", placeholder: "…", desc: "Required to use Mistral as primary or failover" },
+      { key: "providers.mistral.models", label: "Mistral Models", kind: "stringlist", desc: "codestral-latest · mistral-large-latest" },
+      { key: "fallback.providers", label: "Custom OpenAI-compatible", kind: "json", desc: 'Extra providers not in the catalog, appended to the failover chain. Example: [{"name":"my-proxy","baseUrl":"https://…/v1","apiKey":"…","model":"llama-3.3-70b"}]' },
     ],
   },
   {
     id: "fallbacks",
-    title: "Fallbacks & Local",
+    title: "Local (Ollama)",
     icon: "server",
     fields: [
-      { key: "fallback.ollama", label: "Ollama Fallback", kind: "toggle", desc: "When every NVIDIA key is rate-limited, fall back to your local Ollama (free forever, no limits)" },
+      { key: "fallback.ollama", label: "Ollama Fallback", kind: "toggle", desc: "When every cloud provider is unavailable, fall back to local Ollama" },
       { key: "fallback.ollamaModel", label: "Ollama Fallback Model", kind: "text", placeholder: "qwen2.5-coder:14b", desc: "Must support tool calling for agent work" },
       { key: "ollama.url", label: "Ollama Server URL", kind: "text", placeholder: "http://localhost:11434", desc: "Point at a remote Ollama (e.g. a rented GPU box) to run big local models off-machine" },
-      { key: "fallback.providers", label: "Extra Fallback Providers", kind: "json", desc: 'OpenAI-compatible providers tried in order after NVIDIA, before Ollama. Example: [{"name":"groq","baseUrl":"https://api.groq.com/openai/v1","apiKey":"gsk_…","model":"llama-3.3-70b-versatile"}]' },
     ],
   },
   {
@@ -119,12 +233,14 @@ const SECTIONS: Section[] = [
   },
 ];
 
-const ALL_KEYS = SECTIONS.flatMap((s) => s.fields.map((f) => f.key));
+const ALL_FIELDS = SECTIONS.flatMap((s) => s.fields);
+const FIELD_BY_KEY = new Map(ALL_FIELDS.map((f) => [f.key, f]));
 
 export class WrightSettingsPanel {
   private static current: WrightSettingsPanel | undefined;
   private readonly panel: vscode.WebviewPanel;
   private readonly disposables: vscode.Disposable[] = [];
+  private healthTimer: ReturnType<typeof setInterval> | undefined;
 
   static show(extensionUri: vscode.Uri): void {
     if (WrightSettingsPanel.current) {
@@ -146,29 +262,85 @@ export class WrightSettingsPanel {
 
     this.disposables.push(
       this.panel.webview.onDidReceiveMessage((msg: { type: string; key?: string; value?: unknown }) => {
-        if (msg.type === "ready") this.postValues();
+        if (msg.type === "ready") {
+          this.postValues();
+          this.postKeyHealth();
+        }
         if (msg.type === "set" && msg.key) void this.set(msg.key, msg.value);
         if (msg.type === "openVSCodeSettings") void vscode.commands.executeCommand("workbench.action.openSettings", "wright");
       }),
       vscode.workspace.onDidChangeConfiguration((e) => {
-        if (e.affectsConfiguration("wright")) this.postValues();
+        if (e.affectsConfiguration("wright") || e.affectsConfiguration("chat.disableAIFeatures")) {
+          this.postValues();
+          this.postKeyHealth();
+        }
       }),
+      { dispose: keyHealth.subscribe(() => this.postKeyHealth()) },
     );
+    // Tick countdown while the panel is open.
+    this.healthTimer = setInterval(() => this.postKeyHealth(), 1_000);
     this.panel.onDidDispose(() => this.dispose(), null, this.disposables);
   }
 
+  private postKeyHealth(): void {
+    const cfg = vscode.workspace.getConfiguration("wright");
+    const extra = (cfg.get<string[]>("nvidia.apiKeys") ?? []).map((k) => k.trim()).filter(Boolean);
+    const primary = cfg.get<string>("nvidia.apiKey")?.trim();
+    const pool = [...(primary ? [primary] : []), ...extra].filter((k, i, a) => a.indexOf(k) === i);
+    const snaps = keyHealth.snapshotForKeys(pool);
+    const byKey: Record<string, { state: string; remainingSec?: number; limitedUntil?: number; label: string }> = {};
+    for (let i = 0; i < pool.length; i++) {
+      const s = snaps[i]!;
+      byKey[pool[i]!] = {
+        state: s.state,
+        remainingSec: s.remainingSec,
+        limitedUntil: s.limitedUntil,
+        label: s.label,
+      };
+    }
+    const limited = snaps.filter((s) => s.state === "limited").length;
+    void this.panel.webview.postMessage({
+      type: "keyHealth",
+      byKey,
+      summary: { total: snaps.length, limited, ok: snaps.length - limited },
+    });
+  }
+
   private async set(key: string, value: unknown): Promise<void> {
+    const field = FIELD_BY_KEY.get(key);
+    const section = field?.configSection ?? "wright";
+    let stored = value;
+    if (field?.invert && typeof value === "boolean") stored = !value;
     try {
-      await vscode.workspace.getConfiguration("wright").update(key, value, vscode.ConfigurationTarget.Global);
+      await vscode.workspace.getConfiguration(section).update(key, stored, vscode.ConfigurationTarget.Global);
+      if (key === "ui.showBuiltinChat" && typeof stored === "boolean") {
+        await applyBuiltinChatVisibility(stored);
+        if (stored) await openBuiltinChatPanel();
+        const choice = await vscode.window.showInformationMessage(
+          stored
+            ? "Built-in IDE chat shown on the right next to Wright. Reload if the Chat icon is missing."
+            : "Built-in IDE chat hidden for now. Uninstalling Wright will restore it automatically.",
+          "Reload Window",
+        );
+        if (choice === "Reload Window") {
+          await vscode.commands.executeCommand("workbench.action.reloadWindow");
+        }
+      }
     } catch (err) {
       void vscode.window.showErrorMessage(`Wright: failed to save ${key}: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 
   private postValues(): void {
-    const cfg = vscode.workspace.getConfiguration("wright");
     const values: Record<string, unknown> = {};
-    for (const key of ALL_KEYS) values[key] = cfg.get(key);
+    for (const field of ALL_FIELDS) {
+      const section = field.configSection ?? "wright";
+      let v = vscode.workspace.getConfiguration(section).get(field.key);
+      if (field.invert && typeof v === "boolean") v = !v;
+      // Default built-in chat ON when unset.
+      if (field.key === "ui.showBuiltinChat" && v === undefined) v = true;
+      values[field.key] = v;
+    }
     if (!Array.isArray(values["models.list"]) || (values["models.list"] as string[]).length === 0) {
       values["models.list"] = DEFAULT_MODEL_LIST;
     }
@@ -176,6 +348,7 @@ export class WrightSettingsPanel {
   }
 
   private dispose(): void {
+    if (this.healthTimer) clearInterval(this.healthTimer);
     WrightSettingsPanel.current = undefined;
     for (const d of this.disposables.splice(0)) d.dispose();
   }
@@ -241,10 +414,33 @@ export class WrightSettingsPanel {
   .tag {
     display: inline-flex; align-items: center; gap: 6px; padding: 3px 8px; border-radius: 4px;
     background: var(--vscode-badge-background); color: var(--vscode-badge-foreground); font-size: 12px;
+    border: 1px solid transparent;
+  }
+  .tag .dot {
+    width: 8px; height: 8px; border-radius: 50%; flex: none;
+    background: #3fb950; box-shadow: 0 0 0 1px rgba(0,0,0,.2);
+  }
+  .tag.health-ok .dot { background: #3fb950; }
+  .tag.health-limited {
+    border-color: rgba(210, 153, 34, .55);
+    background: color-mix(in srgb, #d29922 18%, var(--vscode-badge-background));
+  }
+  .tag.health-limited .dot { background: #d29922; }
+  .tag.health-hot {
+    border-color: rgba(248, 81, 73, .65);
+    background: color-mix(in srgb, #f85149 18%, var(--vscode-badge-background));
+  }
+  .tag.health-hot .dot { background: #f85149; }
+  .tag .countdown {
+    font-variant-numeric: tabular-nums; opacity: .9; font-size: 11px; min-width: 2.2em;
   }
   .tag button { border: none; background: none; color: inherit; cursor: pointer; padding: 0; font-size: 13px; line-height: 1; opacity: .7; }
   .tag button:hover { opacity: 1; }
   .tags input { flex: 1 1 160px; min-width: 140px; }
+  .key-health-summary {
+    font-size: 11px; opacity: .75; margin-top: 2px;
+  }
+  .key-health-summary .pct { font-weight: 600; }
   .json-status { font-size: 11px; margin-top: 4px; }
   .json-status.err { color: var(--vscode-errorForeground); }
   .json-status.ok { color: var(--vscode-testing-iconPassed, #73c991); opacity: .8; }
@@ -264,7 +460,10 @@ export class WrightSettingsPanel {
   const vscodeApi = acquireVsCodeApi();
   const SECTIONS = ${JSON.stringify(SECTIONS)};
   let values = {};
+  let keyHealthByKey = {};
+  let keyHealthSummary = { total: 0, limited: 0, ok: 0 };
   let flashTimer;
+  const keyTagRerenders = [];
 
   function flash() {
     const el = document.getElementById("flash");
@@ -276,6 +475,32 @@ export class WrightSettingsPanel {
     values[key] = value;
     vscodeApi.postMessage({ type: "set", key, value });
     flash();
+  }
+
+  function maskKey(key) {
+    if (!key) return "";
+    const tip = key.slice(-4);
+    if (key.length <= 10) return "••••" + tip;
+    return key.slice(0, 6) + "…" + tip;
+  }
+
+  function applyKeyHealth(tag, rawKey) {
+    const h = keyHealthByKey[rawKey];
+    tag.classList.remove("health-ok", "health-limited", "health-hot");
+    let countdown = tag.querySelector(".countdown");
+    if (!h || h.state === "ok") {
+      tag.classList.add("health-ok");
+      if (countdown) countdown.remove();
+      return;
+    }
+    const sec = h.remainingSec || 0;
+    tag.classList.add(sec > 45 ? "health-hot" : "health-limited");
+    if (!countdown) {
+      countdown = document.createElement("span");
+      countdown.className = "countdown";
+      tag.insertBefore(countdown, tag.querySelector("button"));
+    }
+    countdown.textContent = sec + "s";
   }
 
   function control(f) {
@@ -292,8 +517,15 @@ export class WrightSettingsPanel {
     } else if (f.kind === "select") {
       const sel = document.createElement("select");
       const opts = f.optionsFromModelList ? (values["models.list"] || []) : (f.options || []);
+      const labels = f.optionLabels || [];
       const list = opts.includes(v) || v === undefined ? opts : [v, ...opts];
-      for (const o of list) { const opt = document.createElement("option"); opt.value = o; opt.textContent = o; sel.append(opt); }
+      for (const o of list) {
+        const opt = document.createElement("option");
+        opt.value = o;
+        const idx = opts.indexOf(o);
+        opt.textContent = idx >= 0 && labels[idx] ? labels[idx] : o;
+        sel.append(opt);
+      }
       if (v !== undefined) sel.value = v;
       sel.addEventListener("change", () => save(f.key, sel.value));
       wrap.append(sel);
@@ -304,21 +536,59 @@ export class WrightSettingsPanel {
       input.value = v === undefined || v === null ? "" : String(v);
       input.addEventListener("change", () => save(f.key, f.kind === "number" ? Number(input.value || 0) : input.value));
       wrap.append(input);
+    } else if (f.kind === "textarea") {
+      wrap.classList.add("wide");
+      const ta = document.createElement("textarea");
+      ta.rows = f.rows || 6;
+      ta.placeholder = f.placeholder || "";
+      ta.value = v === undefined || v === null ? "" : String(v);
+      ta.addEventListener("change", () => save(f.key, ta.value));
+      wrap.append(ta);
     } else if (f.kind === "stringlist") {
       wrap.classList.add("wide");
       const tags = document.createElement("div"); tags.className = "tags";
       const items = Array.isArray(v) ? [...v] : [];
+      const summary = f.keyHealth ? document.createElement("div") : null;
+      if (summary) summary.className = "key-health-summary";
       const renderTags = () => {
         tags.textContent = "";
         for (let i = 0; i < items.length; i++) {
+          const raw = items[i];
           const tag = document.createElement("span"); tag.className = "tag";
-          const text = document.createElement("span"); text.textContent = items[i];
+          if (f.keyHealth) {
+            tag.dataset.key = raw;
+            const dot = document.createElement("span"); dot.className = "dot"; dot.title = "Key health";
+            tag.append(dot);
+          }
+          const text = document.createElement("span");
+          text.textContent = f.keyHealth ? maskKey(raw) : raw;
+          text.title = f.keyHealth ? raw : "";
           const del = document.createElement("button"); del.textContent = "×"; del.title = "Remove";
           del.addEventListener("click", () => { items.splice(i, 1); save(f.key, [...items]); renderTags(); });
-          tag.append(text, del); tags.append(tag);
+          tag.append(text, del);
+          if (f.keyHealth) applyKeyHealth(tag, raw);
+          tags.append(tag);
         }
         tags.append(input);
+        if (summary) updateSummary();
       };
+      const updateSummary = () => {
+        if (!summary) return;
+        const poolExtra = items.length;
+        const limitedExtra = items.filter((k) => keyHealthByKey[k]?.state === "limited").length;
+        const okExtra = poolExtra - limitedExtra;
+        const pct = poolExtra === 0 ? 100 : Math.round((okExtra / poolExtra) * 100);
+        summary.innerHTML = poolExtra === 0
+          ? "No extra keys yet — add free-tier keys to rotate on 429"
+          : '<span class="pct">' + pct + '% ready</span> · ' + okExtra + ' healthy · ' + limitedExtra + ' cooling';
+      };
+      const refreshHealth = () => {
+        for (const tag of tags.querySelectorAll(".tag[data-key]")) {
+          applyKeyHealth(tag, tag.dataset.key);
+        }
+        updateSummary();
+      };
+      if (f.keyHealth) keyTagRerenders.push(refreshHealth);
       const input = document.createElement("input"); input.type = "text"; input.placeholder = "Type and press Enter…";
       input.addEventListener("keydown", (e) => {
         if (e.key === "Enter" && input.value.trim()) {
@@ -328,6 +598,7 @@ export class WrightSettingsPanel {
       });
       renderTags();
       wrap.append(tags);
+      if (summary) wrap.append(summary);
     } else if (f.kind === "json") {
       wrap.classList.add("wide");
       const holder = document.createElement("div"); holder.style.width = "100%";
@@ -349,6 +620,7 @@ export class WrightSettingsPanel {
   }
 
   function renderAll() {
+    keyTagRerenders.length = 0;
     const nav = document.getElementById("nav");
     const main = document.getElementById("main");
     const active = document.querySelector("nav button.active")?.dataset.id || SECTIONS[0].id;
@@ -372,7 +644,7 @@ export class WrightSettingsPanel {
       sec.append(h);
       for (const f of s.fields) {
         const row = document.createElement("div"); row.className = "row";
-        if (f.kind === "json" || f.kind === "stringlist") row.classList.add("stacked");
+        if (f.kind === "json" || f.kind === "stringlist" || f.kind === "textarea") row.classList.add("stacked");
         const meta = document.createElement("div"); meta.className = "meta";
         const label = document.createElement("div"); label.className = "label"; label.textContent = f.label;
         const desc = document.createElement("div"); desc.className = "desc"; desc.textContent = f.desc;
@@ -387,6 +659,11 @@ export class WrightSettingsPanel {
   document.getElementById("openRaw").addEventListener("click", () => vscodeApi.postMessage({ type: "openVSCodeSettings" }));
   window.addEventListener("message", (e) => {
     if (e.data.type === "config") { values = e.data.values; renderAll(); }
+    if (e.data.type === "keyHealth") {
+      keyHealthByKey = e.data.byKey || {};
+      keyHealthSummary = e.data.summary || { total: 0, limited: 0, ok: 0 };
+      for (const fn of keyTagRerenders) fn();
+    }
   });
   vscodeApi.postMessage({ type: "ready" });
 </script>
