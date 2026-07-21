@@ -24,8 +24,8 @@ export function activate(context: vscode.ExtensionContext): void {
 
   const indexService = new IndexService(getConfig().embedModel);
   const chatProvider = new ChatViewProvider(context.extensionUri, indexService, context.workspaceState);
-  // ▶ Build in the Plan panel hands the plan file to the chat agent.
-  PlanPanel.onBuild = (uri, rel) => chatProvider.buildPlan(uri, rel);
+  // ▶ Build in the Plan panel hands the in-memory plan to the chat agent.
+  PlanPanel.onBuild = () => chatProvider.buildPlan();
 
   // Cross-provider usage tracking (attributed to the provider that served each request).
   const usage = new UsageTracker(context.globalState);

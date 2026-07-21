@@ -1739,6 +1739,39 @@ body.vscode-light .research-pill.research-deep {
   border-color: var(--w-accent);
 }
 
+.plan-card {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 4px 0 14px;
+  padding: 8px 12px;
+  border: 1px solid color-mix(in srgb, var(--w-accent) 30%, var(--w-border));
+  border-radius: var(--w-radius-lg);
+  background: color-mix(in srgb, var(--w-accent) 6%, transparent);
+  font-size: 12.5px;
+}
+.plan-card-label { font-weight: 600; color: var(--vscode-foreground); }
+.plan-card-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--vscode-descriptionForeground);
+}
+.plan-card-open {
+  flex: none;
+  border: 1px solid var(--w-border-soft);
+  background: transparent;
+  color: var(--w-accent);
+  font: inherit;
+  font-size: 11.5px;
+  cursor: pointer;
+  padding: 3px 10px;
+  border-radius: 999px;
+}
+.plan-card-open:hover { border-color: var(--w-accent); background: color-mix(in srgb, var(--w-accent) 10%, transparent); }
+
 .queue-list {
   margin: 0 10px 4px;
   border: 1px solid var(--w-border-soft);

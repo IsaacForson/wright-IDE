@@ -208,24 +208,151 @@ function inlineMd(s: string): string {
     .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
 }
 
+/** Render a loose markdown subset (headings, fences, bullets, paragraphs) — used for the live draft. */
+export function renderMarkdownBlocks(md: string): string {
+  const out: string[] = [];
+  let fence: string[] | undefined;
+  let list: string[] | undefined;
+  const flushList = () => {
+    if (list?.length) out.push(`<ul class="plain">${list.map((b) => `<li>${inlineMd(b)}</li>`).join("")}</ul>`);
+    list = undefined;
+  };
+  for (const raw of md.split("\n")) {
+    const line = raw.trimEnd();
+    if (line.trim().startsWith("```")) {
+      if (fence) {
+        out.push(`<pre class="diagram">${fence.join("\n").replace(/&/g, "&amp;").replace(/</g, "&lt;")}</pre>`);
+        fence = undefined;
+      } else {
+        flushList();
+        fence = [];
+      }
+      continue;
+    }
+    if (fence) {
+      fence.push(raw);
+      continue;
+    }
+    const h = line.match(/^(#{1,4})\s+(.+)$/);
+    if (h) {
+      flushList();
+      out.push(h[1]!.length === 1 ? `<h1>${inlineMd(h[2]!)}</h1>` : `<h2>${inlineMd(h[2]!)}</h2>`);
+      continue;
+    }
+    const bullet = line.match(/^\s*[-*•]\s+(.*\S)/);
+    if (bullet) {
+      (list ??= []).push(bullet[1]!.replace(/^\[[ xX]?\]\s*/, ""));
+      continue;
+    }
+    flushList();
+    if (line.trim()) out.push(`<p>${inlineMd(line.trim())}</p>`);
+  }
+  flushList();
+  if (fence) out.push(`<pre class="diagram">${fence.join("\n").replace(/&/g, "&amp;").replace(/</g, "&lt;")}</pre>`);
+  return out.join("");
+}
+
+/** The plan panel's lifecycle phase. */
+export type PlanPhase = "drafting" | "ready" | "building" | "done";
+
+export interface PlanState {
+  phase: PlanPhase;
+  /** Structured plan, once parsed (ready/building/done). */
+  doc?: PlanDoc;
+  /** Raw markdown streaming in during the drafting phase. */
+  draft?: string;
+  /** Short task label shown while drafting before a title exists. */
+  task?: string;
+}
+
+/** Stylesheet for the plan panel — injected once into the panel shell. */
+export const PLAN_PANEL_CSS = `
+  :root { --accent: #f5a623; --accent2: #f97316; }
+  body.vscode-light { --accent: #c2410c; --accent2: #ea580c; }
+  body { font-family: var(--vscode-font-family); color: var(--vscode-foreground);
+         max-width: 680px; margin: 0 auto; padding: 26px 30px; line-height: 1.55; font-size: 13.5px; }
+  h1 { font-size: 21px; font-weight: 700; margin: 0 0 14px; line-height: 1.3; }
+  .statusbar { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; font-size: 12px;
+               color: var(--vscode-descriptionForeground); }
+  .chip { border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
+          background: color-mix(in srgb, var(--accent) 12%, transparent);
+          color: var(--accent); border-radius: 999px; padding: 1px 10px; font-weight: 600; }
+  .chip.complete { border-color: color-mix(in srgb, #3fb950 55%, transparent);
+                   background: color-mix(in srgb, #3fb950 14%, transparent); color: #3fb950; }
+  .bar { height: 6px; border-radius: 999px; margin: 10px 0 22px;
+         background: color-mix(in srgb, var(--vscode-foreground) 10%, transparent); overflow: hidden; }
+  .bar > div { height: 100%; border-radius: 999px;
+               background: linear-gradient(90deg, var(--accent), var(--accent2)); transition: width .4s ease; }
+  h2 { font-size: 11.5px; text-transform: uppercase; letter-spacing: .06em;
+       color: var(--vscode-descriptionForeground); margin: 22px 0 8px; }
+  .goal { color: color-mix(in srgb, var(--vscode-foreground) 88%, transparent); margin: 0 0 4px; }
+  ul.steps { list-style: none; margin: 4px 0 0; padding: 0; }
+  .step { display: flex; align-items: baseline; gap: 11px; padding: 7px 10px; border-radius: 8px; margin: 2px 0; }
+  .step.current { background: color-mix(in srgb, var(--accent) 8%, transparent);
+                  outline: 1px solid color-mix(in srgb, var(--accent) 30%, transparent); }
+  .box { flex: none; width: 17px; height: 17px; border-radius: 5px; display: inline-flex;
+         align-items: center; justify-content: center; font-size: 11px; font-weight: 800;
+         transform: translateY(3px);
+         border: 1.5px solid color-mix(in srgb, var(--vscode-foreground) 30%, transparent); }
+  .step.done .box { border-color: var(--accent); background: var(--accent); color: #241505; }
+  .step.done .text { text-decoration: line-through; opacity: .5; }
+  .now { flex: none; margin-left: auto; align-self: center; font-size: 10px; font-weight: 700;
+         letter-spacing: .05em; text-transform: uppercase; color: var(--accent); }
+  code { background: color-mix(in srgb, var(--vscode-foreground) 9%, transparent);
+         border-radius: 4px; padding: 1px 5px; font-family: var(--vscode-editor-font-family, monospace);
+         font-size: .88em; }
+  .foot { margin-top: 26px; padding-top: 12px; font-size: 11.5px;
+          border-top: 1px solid color-mix(in srgb, var(--vscode-foreground) 10%, transparent);
+          color: var(--vscode-descriptionForeground); }
+  pre.diagram { background: color-mix(in srgb, var(--vscode-foreground) 5%, transparent);
+                border: 1px solid color-mix(in srgb, var(--vscode-foreground) 10%, transparent);
+                border-radius: 10px; padding: 14px 16px; overflow-x: auto; line-height: 1.35;
+                font-family: var(--vscode-editor-font-family, monospace); font-size: 12px;
+                color: color-mix(in srgb, var(--accent) 55%, var(--vscode-foreground)); }
+  ul.plain { margin: 4px 0 10px; padding-left: 20px; }
+  ul.plain li { margin: 5px 0; }
+  p { margin: 6px 0 10px; }
+  .build-btn { display: inline-flex; align-items: center; gap: 7px; border: none; cursor: pointer;
+               background: linear-gradient(135deg, var(--accent), var(--accent2));
+               color: #241505; font-weight: 700; font-size: 13px; font-family: inherit;
+               border-radius: 8px; padding: 8px 22px; margin-left: auto; }
+  body.vscode-light .build-btn { color: #ffffff; }
+  .build-btn:hover { filter: brightness(1.08); }
+  .build-btn:disabled { cursor: default; filter: none; opacity: .75; }
+  .headrow { display: flex; align-items: center; gap: 14px; margin-bottom: 6px; }
+  .headrow .statusbar { margin-bottom: 0; flex-wrap: wrap; }
+  .spin { display: inline-block; width: 12px; height: 12px; border-radius: 50%;
+          border: 2px solid color-mix(in srgb, var(--accent) 30%, transparent); border-top-color: var(--accent);
+          animation: sp .8s linear infinite; vertical-align: -2px; margin-right: 6px; }
+  @keyframes sp { to { transform: rotate(360deg); } }
+`;
+
 /**
- * Self-contained HTML for the Wright Plan panel: real checkboxes, ember
- * progress bar, strikethrough for done steps, "current" marker on the first
- * open one, rich sections (architecture diagram, tradeoffs), and a Build
- * button. Pure so it can be tested and previewed outside VS Code.
+ * Render the plan panel BODY (inner HTML only — CSS lives in the shell) for a
+ * given state: streams the draft live while planning, then shows the parsed
+ * plan with real checkboxes, progress bar, diagram/tradeoffs, and a Build
+ * button whose state follows the phase. Pure — testable outside VS Code.
  */
-export function renderPlanHtml(doc: PlanDoc, relPath: string, opts: { showBuild?: boolean } = {}): string {
-  const [done, total] = [doc.steps.filter((s) => s.done).length, doc.steps.length];
+export function renderPlanBody(state: PlanState): string {
+  if (state.phase === "drafting" && !state.doc) {
+    const draft = state.draft?.trim();
+    return `<h1>${inlineMd(state.task ? state.task : "New plan")}</h1>
+      <div class="statusbar"><span class="chip"><span class="spin"></span>Drafting plan…</span></div>
+      ${draft ? renderMarkdownBlocks(draft) : '<p class="goal">Thinking through the approach…</p>'}`;
+  }
+  const doc = state.doc ?? { title: state.task ?? "Plan", steps: [], sections: [] };
+  const done = doc.steps.filter((s) => s.done).length;
+  const total = doc.steps.length;
   const pct = total === 0 ? 0 : Math.round((done / total) * 100);
-  const complete = total > 0 && done === total;
+  const complete = state.phase === "done" || (total > 0 && done === total);
+  const building = state.phase === "building";
   const currentIdx = doc.steps.findIndex((s) => !s.done);
-  const showBuild = (opts.showBuild ?? true) && !complete && total > 0;
   const sectionsHtml = doc.sections
     .map((s) => `<h2>${inlineMd(s.heading)}</h2>${renderSectionBody(s.body)}`)
     .join("");
   const stepRows = doc.steps
     .map((s, i) => {
-      const current = i === currentIdx && !complete;
+      const current = i === currentIdx && !complete && building;
       return `<li class="step${s.done ? " done" : ""}${current ? " current" : ""}">
         <span class="box">${s.done ? "✓" : ""}</span>
         <span class="text">${inlineMd(s.text)}</span>
@@ -233,89 +360,39 @@ export function renderPlanHtml(doc: PlanDoc, relPath: string, opts: { showBuild?
       </li>`;
     })
     .join("");
-  return `<!DOCTYPE html><html><head><meta charset="utf-8"><style>
-    :root { --accent: #f5a623; --accent2: #f97316; }
-    body.vscode-light { --accent: #c2410c; --accent2: #ea580c; }
-    body { font-family: var(--vscode-font-family); color: var(--vscode-foreground);
-           max-width: 680px; margin: 0 auto; padding: 26px 30px; line-height: 1.55; font-size: 13.5px; }
-    h1 { font-size: 21px; font-weight: 700; margin: 0 0 14px; line-height: 1.3; }
-    .statusbar { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; font-size: 12px;
-                 color: var(--vscode-descriptionForeground); }
-    .chip { border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
-            background: color-mix(in srgb, var(--accent) 12%, transparent);
-            color: var(--accent); border-radius: 999px; padding: 1px 10px; font-weight: 600; }
-    .chip.complete { border-color: color-mix(in srgb, #3fb950 55%, transparent);
-                     background: color-mix(in srgb, #3fb950 14%, transparent); color: #3fb950; }
-    .bar { height: 6px; border-radius: 999px; margin: 10px 0 22px;
-           background: color-mix(in srgb, var(--vscode-foreground) 10%, transparent); overflow: hidden; }
-    .bar > div { height: 100%; width: ${pct}%; border-radius: 999px;
-                 background: linear-gradient(90deg, var(--accent), var(--accent2)); transition: width .4s ease; }
-    h2 { font-size: 11.5px; text-transform: uppercase; letter-spacing: .06em;
-         color: var(--vscode-descriptionForeground); margin: 22px 0 8px; }
-    .goal { color: color-mix(in srgb, var(--vscode-foreground) 88%, transparent); margin: 0 0 4px; }
-    ul.steps { list-style: none; margin: 4px 0 0; padding: 0; }
-    .step { display: flex; align-items: baseline; gap: 11px; padding: 7px 10px; border-radius: 8px; margin: 2px 0; }
-    .step.current { background: color-mix(in srgb, var(--accent) 8%, transparent);
-                    outline: 1px solid color-mix(in srgb, var(--accent) 30%, transparent); }
-    .box { flex: none; width: 17px; height: 17px; border-radius: 5px; display: inline-flex;
-           align-items: center; justify-content: center; font-size: 11px; font-weight: 800;
-           transform: translateY(3px);
-           border: 1.5px solid color-mix(in srgb, var(--vscode-foreground) 30%, transparent); }
-    .step.done .box { border-color: var(--accent); background: var(--accent); color: #241505; }
-    .step.done .text { text-decoration: line-through; opacity: .5; }
-    .now { flex: none; margin-left: auto; align-self: center; font-size: 10px; font-weight: 700;
-           letter-spacing: .05em; text-transform: uppercase; color: var(--accent); }
-    code { background: color-mix(in srgb, var(--vscode-foreground) 9%, transparent);
-           border-radius: 4px; padding: 1px 5px; font-family: var(--vscode-editor-font-family, monospace);
-           font-size: .88em; }
-    .foot { margin-top: 26px; padding-top: 12px; font-size: 11.5px;
-            border-top: 1px solid color-mix(in srgb, var(--vscode-foreground) 10%, transparent);
-            color: var(--vscode-descriptionForeground); }
-    pre.diagram { background: color-mix(in srgb, var(--vscode-foreground) 5%, transparent);
-                  border: 1px solid color-mix(in srgb, var(--vscode-foreground) 10%, transparent);
-                  border-radius: 10px; padding: 14px 16px; overflow-x: auto; line-height: 1.35;
-                  font-family: var(--vscode-editor-font-family, monospace); font-size: 12px;
-                  color: color-mix(in srgb, var(--accent) 55%, var(--vscode-foreground)); }
-    ul.plain { margin: 4px 0 10px; padding-left: 20px; }
-    ul.plain li { margin: 5px 0; }
-    p { margin: 6px 0 10px; }
-    .build-btn { display: inline-flex; align-items: center; gap: 7px; border: none; cursor: pointer;
-                 background: linear-gradient(135deg, var(--accent), var(--accent2));
-                 color: #241505; font-weight: 700; font-size: 13px; font-family: inherit;
-                 border-radius: 8px; padding: 8px 22px; margin-left: auto; }
-    body.vscode-light .build-btn { color: #ffffff; }
-    .build-btn:hover { filter: brightness(1.08); }
-    .headrow { display: flex; align-items: center; gap: 14px; margin-bottom: 6px; }
-    .headrow .statusbar { margin-bottom: 0; flex-wrap: wrap; }
-  </style></head><body>
-    <h1>${inlineMd(doc.title)}</h1>
+  const chip = complete
+    ? '<span class="chip complete">✓ Complete</span>'
+    : building
+      ? '<span class="chip"><span class="spin"></span>Building</span>'
+      : '<span class="chip">📋 Ready</span>';
+  const buildBtn = complete
+    ? ""
+    : building
+      ? '<button class="build-btn" id="build" disabled><span class="spin"></span>Building…</button>'
+      : '<button class="build-btn" id="build">▶&nbsp;Build</button>';
+  return `<h1>${inlineMd(doc.title)}</h1>
     <div class="headrow">
       <div class="statusbar">
-        <span class="chip${complete ? " complete" : ""}">${complete ? "✓ Complete" : "🔨 In progress"}</span>
+        ${chip}
         <span>${done}/${total} steps</span>
-        ${doc.started ? `<span>· started ${doc.started}</span>` : ""}
         <span>· ${pct}%</span>
       </div>
-      ${showBuild ? '<button class="build-btn" id="build">▶&nbsp;Build</button>' : ""}
+      ${buildBtn}
     </div>
-    <div class="bar"><div></div></div>
+    <div class="bar"><div style="width:${pct}%"></div></div>
     ${doc.goal ? `<h2>Goal</h2><p class="goal">${inlineMd(doc.goal)}</p>` : ""}
     ${sectionsHtml}
     <h2>Steps</h2>
     <ul class="steps">${stepRows}</ul>
-    <div class="foot">Live view of <code>${inlineMd(relPath)}</code> — updates as Wright completes each step.</div>
-    ${
-      showBuild
-        ? `<script>
-    (function () {
-      var api = typeof acquireVsCodeApi === "function" ? acquireVsCodeApi() : undefined;
-      var btn = document.getElementById("build");
-      if (btn) btn.addEventListener("click", function () { if (api) api.postMessage({ type: "build" }); });
-    })();
-  </script>`
-        : ""
-    }
-  </body></html>`;
+    <div class="foot">${building ? "Wright is building — steps tick off as they complete." : complete ? "All steps complete." : "Review the plan, then press Build."}</div>`;
+}
+
+/** Full standalone page (CSS + body) — used for tests/preview outside the panel. */
+export function renderPlanHtml(doc: PlanDoc, _relPath: string, opts: { showBuild?: boolean } = {}): string {
+  const total = doc.steps.length;
+  const complete = total > 0 && doc.steps.every((s) => s.done);
+  const phase: PlanPhase = complete ? "done" : (opts.showBuild ?? true) ? "ready" : "done";
+  return `<!DOCTYPE html><html><head><meta charset="utf-8"><style>${PLAN_PANEL_CSS}</style></head><body>${renderPlanBody({ phase, doc })}</body></html>`;
 }
 
 /** Matches short "continue"-style messages that should resume a live plan. */

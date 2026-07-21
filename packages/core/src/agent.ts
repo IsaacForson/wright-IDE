@@ -1,5 +1,5 @@
 import type { ModelClient } from "./client.js";
-import type { ChatMessage, ToolCall, Usage, UserMessage } from "./types.js";
+import type { AssistantMessage, ChatMessage, ToolCall, Usage, UserMessage } from "./types.js";
 import type { Tool, ToolResult } from "./tools.js";
 import { ContextBudget, estimateConversationTokens } from "./tokens.js";
 import { ModelError } from "./errors.js";
@@ -162,7 +162,7 @@ export class Agent {
           totalUsage.completion_tokens += result.usage.completion_tokens;
           totalUsage.total_tokens += result.usage.total_tokens;
         }
-        this.messages.push(result.message);
+        this.pushAssistant(result.message);
         toolCalls = result.message.tool_calls ?? [];
       } else {
         for await (const event of client.stream(request, { signal: runOpts.signal })) {
@@ -179,7 +179,7 @@ export class Agent {
               totalUsage.completion_tokens += event.result.usage.completion_tokens;
               totalUsage.total_tokens += event.result.usage.total_tokens;
             }
-            this.messages.push(event.result.message);
+            this.pushAssistant(event.result.message);
             toolCalls = event.result.message.tool_calls ?? [];
           }
         }
@@ -241,6 +241,17 @@ export class Agent {
     const nonSystem = this.messages.filter((m) => m.role !== "system");
     if (nonSystem.length < 6) return false;
     return this.contextFill >= SELF_SUMMARIZE_THRESHOLD;
+  }
+
+  /**
+   * Append an assistant turn to history — but never an EMPTY one (no content
+   * and no tool_calls). Empty turns are rejected by strict providers (Mistral)
+   * and carry nothing worth keeping; dropping one just ends the turn cleanly.
+   */
+  private pushAssistant(message: AssistantMessage): void {
+    const hasText = typeof message.content === "string" && message.content.trim().length > 0;
+    const hasCalls = Array.isArray(message.tool_calls) && message.tool_calls.length > 0;
+    if (hasText || hasCalls) this.messages.push(message);
   }
 
   /**

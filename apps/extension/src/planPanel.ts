@@ -1,49 +1,46 @@
 import * as vscode from "vscode";
-import { parsePlanDoc, renderPlanHtml } from "./planFile.js";
+import { PLAN_PANEL_CSS, renderPlanBody, type PlanState } from "./planFile.js";
 
 /**
- * Wright's plan viewer — a dedicated panel (like Cursor's) that renders the
- * .wright/plans/*.md document with real checkboxes, an ember progress bar and
- * a "current step" marker. Watches the file and re-renders on every tick, so
- * progress survives tab switches: it always reflects what's on disk.
+ * Wright's plan viewer — a dedicated panel (like Cursor's) rendered entirely
+ * from in-memory state pushed by ChatViewProvider. The plan streams in live
+ * while it's being drafted, then shows real checkboxes / progress / a Build
+ * button whose state follows the phase. No file on disk — the host owns the
+ * state and re-pushes it whenever the panel (re)opens.
  */
 export class PlanPanel {
-  private static current: PlanPanel | undefined;
+  private static instance: PlanPanel | undefined;
+  private static lastState: PlanState | undefined;
 
-  /** Wired by extension.ts — the ▶ Build button hands the plan to the agent. */
-  static onBuild: ((uri: vscode.Uri, relPath: string) => void) | undefined;
+  /** Wired by extension.ts — the ▶ Build button hands control to the chat agent. */
+  static onBuild: (() => void) | undefined;
 
-  static async show(uri: vscode.Uri, relPath: string): Promise<void> {
-    if (!PlanPanel.current) PlanPanel.current = new PlanPanel();
-    await PlanPanel.current.bind(uri, relPath);
+  /** Push new plan state; opens the panel if needed. */
+  static render(state: PlanState): void {
+    PlanPanel.lastState = state;
+    PlanPanel.ensure().push(state);
   }
 
-  /** Open the most recent plan in the workspace's .wright/plans folder. */
-  static async showLatest(): Promise<void> {
-    const root = vscode.workspace.workspaceFolders?.[0]?.uri;
-    if (!root) {
-      vscode.window.showInformationMessage("Wright: open a folder to view plans.");
+  /** Reopen the panel showing the current plan (for the chat "Open plan panel" link). */
+  static reveal(): void {
+    if (!PlanPanel.lastState) {
+      vscode.window.showInformationMessage("Wright: no active plan — create one from Plan mode in the chat.");
       return;
     }
-    const dir = vscode.Uri.joinPath(root, ".wright", "plans");
-    try {
-      const entries = await vscode.workspace.fs.readDirectory(dir);
-      const latest = entries
-        .filter(([name, type]) => type === vscode.FileType.File && name.endsWith(".md"))
-        .map(([name]) => name)
-        .sort()
-        .pop();
-      if (!latest) throw new Error("empty");
-      await PlanPanel.show(vscode.Uri.joinPath(dir, latest), `.wright/plans/${latest}`);
-    } catch {
-      vscode.window.showInformationMessage("Wright: no plans yet — run one from Plan mode in the chat.");
-    }
+    PlanPanel.ensure().push(PlanPanel.lastState);
+  }
+
+  /** Command entry point (wright.openPlan). */
+  static showLatest(): void {
+    PlanPanel.reveal();
+  }
+
+  private static ensure(): PlanPanel {
+    if (!PlanPanel.instance) PlanPanel.instance = new PlanPanel();
+    return PlanPanel.instance;
   }
 
   private readonly panel: vscode.WebviewPanel;
-  private watcher: vscode.FileSystemWatcher | undefined;
-  private uri: vscode.Uri | undefined;
-  private relPath = "";
 
   private constructor() {
     this.panel = vscode.window.createWebviewPanel(
@@ -52,40 +49,42 @@ export class PlanPanel {
       { viewColumn: vscode.ViewColumn.Beside, preserveFocus: true },
       { enableScripts: true, retainContextWhenHidden: true },
     );
+    this.panel.webview.html = this.shell();
     this.panel.webview.onDidReceiveMessage((m: { type?: string }) => {
-      if (m?.type === "build" && this.uri) PlanPanel.onBuild?.(this.uri, this.relPath);
+      if (m?.type === "ready" && PlanPanel.lastState) this.push(PlanPanel.lastState);
+      if (m?.type === "build") PlanPanel.onBuild?.();
     });
     this.panel.onDidDispose(() => {
-      PlanPanel.current = undefined;
-      this.watcher?.dispose();
+      PlanPanel.instance = undefined;
     });
   }
 
-  private async bind(uri: vscode.Uri, relPath: string): Promise<void> {
-    this.uri = uri;
-    this.relPath = relPath;
-    this.watcher?.dispose();
-    const dir = uri.path.slice(0, uri.path.lastIndexOf("/"));
-    const base = uri.path.split("/").pop()!;
-    this.watcher = vscode.workspace.createFileSystemWatcher(
-      new vscode.RelativePattern(vscode.Uri.file(dir), base),
-    );
-    this.watcher.onDidChange(() => void this.render());
-    this.watcher.onDidCreate(() => void this.render());
-    await this.render();
+  private push(state: PlanState): void {
+    const done = state.doc?.steps.filter((s) => s.done).length ?? 0;
+    const total = state.doc?.steps.length ?? 0;
+    this.panel.title =
+      state.phase === "drafting" ? "Wright: Plan (drafting…)"
+      : state.phase === "done" || (total > 0 && done === total) ? "Wright: Plan ✓"
+      : `Wright: Plan ${done}/${total}`;
+    void this.panel.webview.postMessage({ type: "render", html: renderPlanBody(state) });
     this.panel.reveal(this.panel.viewColumn ?? vscode.ViewColumn.Beside, true);
   }
 
-  private async render(): Promise<void> {
-    if (!this.uri) return;
-    try {
-      const raw = Buffer.from(await vscode.workspace.fs.readFile(this.uri)).toString("utf8");
-      const doc = parsePlanDoc(raw);
-      const [done, total] = [doc.steps.filter((s) => s.done).length, doc.steps.length];
-      this.panel.title = total > 0 && done === total ? "Wright: Plan ✓" : `Wright: Plan ${done}/${total}`;
-      this.panel.webview.html = renderPlanHtml(doc, this.relPath);
-    } catch {
-      /* file mid-write or deleted — the next watcher event re-renders */
-    }
+  private shell(): string {
+    return `<!DOCTYPE html><html><head><meta charset="utf-8">
+      <style>${PLAN_PANEL_CSS}</style></head>
+      <body><div id="root"></div>
+      <script>
+        const api = acquireVsCodeApi();
+        window.addEventListener("message", (e) => {
+          const m = e.data;
+          if (m && m.type === "render") document.getElementById("root").innerHTML = m.html;
+        });
+        document.addEventListener("click", (e) => {
+          const b = e.target.closest && e.target.closest("#build");
+          if (b && !b.disabled) api.postMessage({ type: "build" });
+        });
+        api.postMessage({ type: "ready" });
+      </script></body></html>`;
   }
 }

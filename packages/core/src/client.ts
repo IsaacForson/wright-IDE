@@ -36,6 +36,24 @@ interface StreamChunk {
 }
 
 /**
+ * Drop invalid assistant turns from a history before sending it. An assistant
+ * message with neither text content nor tool_calls is rejected by strict
+ * providers (Mistral: "Invalid assistant message … content=None tool_calls=None")
+ * while lenient ones (NVIDIA/OpenAI) silently accept it — so one empty turn,
+ * often left by a truncated/cancelled response, poisons every later request on
+ * the strict provider. Removing it is always safe: a message with no content
+ * and no tool_calls carries nothing, and nothing references it.
+ */
+export function sanitizeMessages(messages: ChatRequest["messages"]): ChatRequest["messages"] {
+  return messages.filter((m) => {
+    if (m.role !== "assistant") return true;
+    const hasText = typeof m.content === "string" && m.content.trim().length > 0;
+    const hasCalls = Array.isArray(m.tool_calls) && m.tool_calls.length > 0;
+    return hasText || hasCalls;
+  });
+}
+
+/**
  * Provider-agnostic client for OpenAI-compatible chat completion endpoints.
  * Owns the HTTP + SSE plumbing; knows nothing about tools' semantics, the
  * agent loop, or any editor — those live in higher layers.
@@ -86,7 +104,7 @@ export class ModelClient {
   async complete(req: ChatRequest, opts: RequestOptions = {}): Promise<ChatResult> {
     const res = await this.fetch(
       "/chat/completions",
-      { method: "POST", body: JSON.stringify({ ...req, stream: false }) },
+      { method: "POST", body: JSON.stringify({ ...req, messages: sanitizeMessages(req.messages), stream: false }) },
       opts,
     );
     const body = (await res.json()) as {
@@ -120,7 +138,7 @@ export class ModelClient {
       "/chat/completions",
       // stream_options.include_usage makes OpenAI-compatible providers emit
       // a final usage chunk; without it streaming responses report no usage.
-      { method: "POST", body: JSON.stringify({ ...req, stream: true, stream_options: { include_usage: true } }) },
+      { method: "POST", body: JSON.stringify({ ...req, messages: sanitizeMessages(req.messages), stream: true, stream_options: { include_usage: true } }) },
       opts,
     );
     if (!res.body) throw new ModelError("server", "Provider returned no response body");

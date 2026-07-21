@@ -1006,6 +1006,9 @@ export function App() {
           if (item.kind === "council") {
             return <CouncilCard key={`co${i}`} item={item} />;
           }
+          if (item.kind === "plan") {
+            return <PlanCard key={`pl${i}`} item={item} />;
+          }
           return item.name === "run_command"
             ? <CommandToolRow key={item.id + i} item={item} commandRunTarget={commandRunTarget} />
             : <ToolRow key={item.id + i} item={item} />;
@@ -1561,6 +1564,25 @@ function TextMessage(props: {
           )}
         </div>
       )}
+    </div>
+  );
+}
+
+function PlanCard({ item }: { item: Extract<UiItem, { kind: "plan" }> }) {
+  const label =
+    item.status === "drafting" ? "Drafting plan…"
+    : item.status === "ready" ? "Plan ready"
+    : item.status === "building" ? "Building plan…"
+    : "Plan complete";
+  const busy = item.status === "drafting" || item.status === "building";
+  return (
+    <div className="plan-card">
+      <Icon name={busy ? "spinner" : item.status === "done" ? "check" : "checklist"} size={13} spin={busy} />
+      <span className="plan-card-label">{label}</span>
+      <span className="plan-card-title">{item.title}</span>
+      <button className="plan-card-open" onClick={() => post({ type: "openPlanPanel" })}>
+        Open plan panel
+      </button>
     </div>
   );
 }

@@ -36,7 +36,7 @@ import { createDiagnosticsTool } from "./diagnosticsTool.js";
 import { createGitHistoryTool } from "./gitHistoryTool.js";
 import { FileMemoryStore } from "./memoryStore.js";
 import { listWorkflows, expandWorkflow } from "./workflows.js";
-import { buildPlanMarkdown, hasUncheckedSteps, isContinueMessage, planSlug } from "./planFile.js";
+import { buildPlanMarkdown, isContinueMessage, parsePlanDoc, type PlanState } from "./planFile.js";
 import { PlanPanel } from "./planPanel.js";
 import { TerminalHost } from "./terminalHost.js";
 import { DEFAULT_MODEL_LIST, getConfig } from "./config.js";
@@ -206,11 +206,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private autoContinues = 0;
   /** How the last agent turn ended — inputs for the unfinished-work detector. */
   private lastTurnEnd: { capHit: boolean; finalText: string } | undefined;
-  /** True while an executed plan's file may still have open steps. */
-  private planFileActive = false;
-  /** The plan document being executed right now. */
-  private currentPlanUri: vscode.Uri | undefined;
-  private currentPlanRel: string | undefined;
+  /** In-memory plan state — source of truth for the Plan panel (no file). */
+  private planState: PlanState | undefined;
+  /** True once Build is pressed and steps remain — keeps auto-continue alive. */
+  private planExecuting = false;
+  /** The compact "plan" card in the transcript (status + reopen link). */
+  private planCard: Extract<UiItem, { kind: "plan" }> | undefined;
 
   private loadSessions(): StoredSession[] {
     const cutoff = Date.now() - 30 * 24 * 60 * 60 * 1000;
@@ -405,9 +406,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this.applyPermissionDefault();
     this.pendingPlan = undefined;
     this.savedMessages = undefined;
-    this.planFileActive = false;
-    this.currentPlanUri = undefined;
-    this.currentPlanRel = undefined;
+    this.planState = undefined;
+    this.planExecuting = false;
+    this.planCard = undefined;
     this.autoContinues = 0;
     this.promptQueue = [];
     this.postQueue();
@@ -553,15 +554,34 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
    * ▶ Build from the Plan panel: hand the plan file to the agent — resume its
    * unchecked steps. Queues if a turn is already running.
    */
-  buildPlan(uri: vscode.Uri, relPath: string): void {
-    this.currentPlanUri = uri;
-    this.currentPlanRel = relPath;
-    this.planFileActive = true;
+  buildPlan(): void {
+    this.startBuild();
+  }
+
+  /**
+   * Hand the in-memory plan to the agent and flip the panel to "building".
+   * Shared by the panel ▶ Build button and the composer's Build bar.
+   */
+  private startBuild(): void {
+    const doc = this.planState?.doc;
+    if (!doc || this.planExecuting) return;
+    this.planExecuting = true;
     this.autoContinues = 0;
+    this.planState = { phase: "building", doc };
+    PlanPanel.render(this.planState);
+    this.setPlanCard("building", doc.title);
+    this.pendingPlan = undefined;
+    this.sendState(this.abort !== undefined);
+
+    const stepsList = doc.steps.map((s, i) => `${i + 1}. ${s.text}`).join("\n");
+    const sections = doc.sections.map((s) => `## ${s.heading}\n${s.body.join("\n")}`).join("\n\n");
     const text =
-      `Execute the plan document at ${relPath}. Read it first; then work through every unchecked "- [ ]" step in order, ` +
-      `ticking each to "- [x]" with edit_file immediately after completing it. Follow the plan's Architecture and Tradeoffs sections. ` +
-      `Do NOT write a new plan — this one is approved. Finish with the plan's Verification step.`;
+      `Execute this approved plan. Do NOT draft a new plan.\n\n` +
+      `Goal: ${doc.goal ?? doc.title}\n\n` +
+      (sections ? `${sections}\n\n` : "") +
+      `Steps:\n${stepsList}\n\n` +
+      `Work through the steps in order. IMMEDIATELY after you finish each step, call the update_plan tool with { step: <number>, status: "done" } so the user watches live progress in the Plan panel. ` +
+      `When every step is done and verified, give a short summary and STOP.`;
     if (this.abort) {
       this.enqueuePrompt({ type: "send", text, mode: "agent", research: "off" });
     } else {
@@ -569,35 +589,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     }
   }
 
-  /** Changes shown in the panel — hides .wright/ internals (live plan ticks). */
+  /** Changes shown in the panel — hides .wright/ internals. */
   private visibleChanges(): FileChangeItem[] {
     return (this.tracker?.changes() ?? []).filter((c) => !c.path.startsWith(".wright/"));
-  }
-
-  /**
-   * Write a Cursor-style plan document to .wright/plans/<slug>.md and open it
-   * in the RENDERED markdown preview (live-updates as the agent ticks steps).
-   * Returns the workspace-relative path, or undefined when nothing was written.
-   */
-  private async writePlanFile(task: string, steps: string[], planBody?: string): Promise<string | undefined> {
-    const root = this.rootPath ?? workspaceRoot()?.fsPath;
-    if (!root || steps.length === 0) return undefined;
-    try {
-      const dir = vscode.Uri.joinPath(vscode.Uri.file(root), ".wright", "plans");
-      await vscode.workspace.fs.createDirectory(dir);
-      const now = new Date();
-      const file = vscode.Uri.joinPath(dir, `${planSlug(task, now)}.md`);
-      await vscode.workspace.fs.writeFile(file, Buffer.from(buildPlanMarkdown(task, steps, now, planBody), "utf8"));
-      this.currentPlanUri = file;
-      this.currentPlanRel = `.wright/plans/${file.path.split("/").pop()}`;
-      // Wright's own plan viewer (real checkboxes, progress bar, live updates
-      // from disk) — VS Code's markdown preview renders task lists as literal
-      // "[ ]" text and themes everything blue, so we don't use it.
-      await PlanPanel.show(file, this.currentPlanRel);
-      return this.currentPlanRel;
-    } catch {
-      return undefined;
-    }
   }
 
   /** Scaffold a new reusable workflow (.wright/workflows/<name>.md) and open it. */
@@ -1038,29 +1032,22 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         await this.pickAttachments();
         return;
       case "executePlan": {
-        const pending = this.pendingPlan;
-        this.pendingPlan = undefined;
-        this.sendState(false);
-        if (!pending) return;
-        // Use the user's edited checklist when provided; else the raw plan.
-        let message =
-          msg.steps && msg.steps.length > 0
-            ? executionMessageFromSteps(pending.task, msg.steps)
-            : executionMessage(pending.task, pending.plan);
-        // Cursor-style live plan file: write .wright/plan.md, open it beside
-        // the chat, and have the agent tick steps off as it completes them.
-        const planFile = await this.writePlanFile(pending.task, msg.steps ?? parsePlanSteps(pending.plan), pending.plan);
-        this.planFileActive = planFile !== undefined; // unchecked steps keep auto-continue alive
-        if (planFile) {
-          message +=
-            `\n\nA live plan document exists at ${planFile} (already open in the editor). ` +
-            `IMPORTANT: immediately after you complete each step, use edit_file on ${planFile} to change that step's "- [ ]" to "- [x]" so the user can watch progress. Keep it in sync as you go.`;
+        // Composer "Build" bar. Apply any edited checklist to the in-memory
+        // plan, then run the shared build path (no file — panel is truth).
+        if (this.planState?.doc && msg.steps && msg.steps.length > 0) {
+          this.planState.doc.steps = msg.steps.map((text) => ({ text, done: false }));
         }
-        await this.handleSend(message, { displayText: "▶ Build plan" });
+        this.startBuild();
         return;
       }
+      case "openPlanPanel":
+        PlanPanel.reveal();
+        return;
       case "discardPlan":
         this.pendingPlan = undefined;
+        this.planState = undefined;
+        this.planExecuting = false;
+        if (this.planCard) this.planCard.status = "done";
         this.items.push({ kind: "text", role: "assistant", content: "_Plan discarded._" });
         this.sendState(false);
         return;
@@ -1498,6 +1485,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     tools.push(createGitHistoryTool(this.rootPath));
     this.memoryStore = new FileMemoryStore(this.rootPath);
     tools.push(createRememberTool(this.memoryStore));
+    tools.push(this.planTool());
     tools.push(
       createAskUserTool(async (payload, signal) => {
         const id = `ask${Date.now().toString(36)}`;
@@ -1636,21 +1624,21 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     // "continue" while a plan is mid-execution RESUMES that plan — regardless
     // of the mode pill. Without this, Plan mode re-plans from scratch, which
     // is exactly the "it made a whole new plan" failure.
-    if (
-      !this.pendingPlan &&
-      this.planFileActive &&
-      isContinueMessage(msg.text) &&
-      (await this.planHasUncheckedSteps())
-    ) {
+    if (!this.pendingPlan && this.planExecuting && isContinueMessage(msg.text) && this.planHasUncheckedSteps()) {
+      const doc = this.planState!.doc!;
+      const remaining = doc.steps
+        .map((s, i) => ({ s, n: i + 1 }))
+        .filter(({ s }) => !s.done)
+        .map(({ s, n }) => `${n}. ${s.text}`)
+        .join("\n");
       await this.handleSend(
-        `Resume executing the plan document at ${this.currentPlanRel ?? ".wright/plans/"} exactly where it left off. ` +
-          `Open it, find the first unchecked "- [ ]" step, do it, tick it to "- [x]", and continue through every remaining step. ` +
-          `Do NOT write a new plan — the plan already exists.`,
+        `Resume the approved plan exactly where it left off — do NOT write a new plan. Remaining steps:\n${remaining}\n\n` +
+          `Do them in order; after each, call update_plan with { step: <number>, status: "done" }. When all are done and verified, summarize and STOP.`,
         { displayText: msg.text, mode: "agent" },
       );
       return;
     }
-    this.planFileActive = false; // a stale plan must not hijack a NEW request
+    this.planExecuting = false; // a stale plan must not hijack a NEW request
     // Reusable workflows: a leading /name expands into its saved recipe,
     // while the transcript keeps showing the short command the user typed.
     let workflowLabel: string | undefined;
@@ -1726,6 +1714,81 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     return turns.length ? turns.join("\n") : undefined;
   }
 
+  /** Build the structured plan doc (in memory — no file) from a generated plan. */
+  private buildPlanDoc(task: string, planBody: string, steps: string[]) {
+    return parsePlanDoc(buildPlanMarkdown(task, steps, new Date(), planBody));
+  }
+
+  /** Add or update the compact plan card in the transcript. */
+  private setPlanCard(status: "drafting" | "ready" | "building" | "done", title: string): void {
+    if (this.planCard && this.items.includes(this.planCard)) {
+      this.planCard.status = status;
+      this.planCard.title = title;
+    } else {
+      this.planCard = { kind: "plan", status, title };
+      this.items.push(this.planCard);
+    }
+    this.sendState(this.abort !== undefined);
+  }
+
+  /**
+   * The update_plan tool's handler. `steps` (re)declares the checklist — used
+   * by plan-less agent to-dos to register their plan; `step`+`status` mark one
+   * step. Either way the Plan panel refreshes live. Returns a short summary.
+   */
+  private applyPlanUpdate(args: { steps?: unknown; step?: unknown; status?: unknown }): string {
+    let doc = this.planState?.doc ?? { title: "Plan", goal: undefined, steps: [], sections: [] };
+    if (Array.isArray(args.steps)) {
+      doc = { ...doc, steps: args.steps.map((t) => ({ text: String(t), done: false })) };
+      this.planExecuting = true;
+      this.planState = { phase: "building", doc };
+      PlanPanel.render(this.planState);
+      this.setPlanCard("building", doc.title);
+      return `Plan registered with ${doc.steps.length} steps.`;
+    }
+    const step = Number(args.step);
+    const done = String(args.status ?? "done") === "done";
+    if (Number.isFinite(step)) {
+      const idx = step - 1;
+      if (idx >= 0 && idx < doc.steps.length) {
+        doc.steps[idx]!.done = done;
+        const allDone = doc.steps.length > 0 && doc.steps.every((s) => s.done);
+        this.planState = { phase: allDone ? "done" : "building", doc };
+        if (allDone) {
+          this.planExecuting = false;
+          this.setPlanCard("done", doc.title);
+        }
+        PlanPanel.render(this.planState);
+        return `Step ${step} → ${done ? "done" : "in progress"} (${doc.steps.filter((s) => s.done).length}/${doc.steps.length}).`;
+      }
+    }
+    return "No matching plan step.";
+  }
+
+  /** The update_plan tool, added to the agent whenever a plan/to-do is active. */
+  private planTool(): import("@wright/core").Tool {
+    return {
+      requiresApproval: false,
+      definition: {
+        type: "function",
+        function: {
+          name: "update_plan",
+          description:
+            "Report plan progress so the user sees it live in the Plan panel. Call with { steps: [...] } once to declare your checklist, then { step: <1-based number>, status: \"done\" } after finishing each step.",
+          parameters: {
+            type: "object",
+            properties: {
+              steps: { type: "array", items: { type: "string" }, description: "Full ordered list of steps (declare once)." },
+              step: { type: "number", description: "1-based step number to update." },
+              status: { type: "string", enum: ["in_progress", "done"], description: "New status for that step." },
+            },
+          },
+        },
+      },
+      execute: async (args) => ({ ok: true, output: this.applyPlanUpdate(args) }),
+    };
+  }
+
   private async handlePlan(task: string, feedback?: string): Promise<void> {
     if (this.abort) return;
     if (!hasAnyCloudCredential() && !this.model.startsWith("ollama:")) {
@@ -1756,9 +1819,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       return;
     }
     this.abort = new AbortController();
-    const planItem: Extract<UiItem, { kind: "text" }> = { kind: "text", role: "assistant", content: "" };
-    this.items.push(planItem);
-    this.post({ type: "assistantStart" });
+    // The plan STREAMS INTO THE PLAN PANEL, not the chat transcript. The chat
+    // gets only a compact card with a reopen link.
+    this.planExecuting = false;
+    this.planState = { phase: "drafting", task, draft: "" };
+    PlanPanel.render(this.planState);
+    this.setPlanCard("drafting", task);
+    let lastRender = 0;
 
     try {
       const embedClient = config.apiKeys.length
@@ -1767,6 +1834,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       const indexer = root && config.apiKeys.length ? await this.indexService.ensure(embedClient, root.fsPath) : undefined;
       const context = indexer ? await planContext(indexer, task, this.abort.signal) : undefined;
       const history = this.recentConversation();
+      let draft = "";
       const plan = await generatePlan(
         client,
         planModel,
@@ -1775,15 +1843,24 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           signal: this.abort.signal,
           onEvent: (e) => {
             if (e.type === "text") {
-              planItem.content += e.text;
-              this.post({ type: "delta", text: e.text });
+              draft += e.text;
+              const now = Date.now();
+              if (now - lastRender > 160) {
+                lastRender = now;
+                this.planState = { phase: "drafting", task, draft };
+                PlanPanel.render(this.planState);
+              }
             }
           },
         },
       );
       this.pendingPlan = { task, plan };
+      const steps = parsePlanSteps(plan);
+      this.planState = { phase: "ready", doc: this.buildPlanDoc(task, plan, steps) };
+      PlanPanel.render(this.planState);
+      this.setPlanCard("ready", task);
       this.post({ type: "turnDone" });
-      this.post({ type: "planReady", steps: parsePlanSteps(plan) });
+      this.post({ type: "planReady", steps });
     } catch (err) {
       if (err instanceof ModelError && err.kind === "aborted") {
         this.post({ type: "turnDone", stats: "cancelled" });
@@ -1863,21 +1940,18 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         "\n\n[The image(s) above are from this project's UI. If they show a bug or a mockup, first use search / codebase_search to find the responsible component(s) in the codebase, then make the change and verify. Don't guess the file — locate it.]";
     }
     // Agent to-dos (Cursor-style): a BIG plan-less agent task gets the same
-    // deterministic completion signal as plan mode — the agent maintains a
-    // checklist file, and "all boxes ticked" is what ends auto-continue.
-    if (big && mode === "agent" && !this.planFileActive && !opts.skipUserItem) {
-      const root = this.rootPath ?? workspaceRoot()?.fsPath;
-      if (root) {
-        const now = new Date();
-        const rel = `.wright/plans/${planSlug(text, now)}.md`;
-        this.currentPlanUri = vscode.Uri.joinPath(vscode.Uri.file(root), rel);
-        this.currentPlanRel = rel;
-        this.planFileActive = true;
-        text +=
-          `\n\n[Multi-step task. FIRST create a checklist file at ${rel} using write_file: a "# <short title>" line, then a "## Steps" section listing every step you intend to do as "- [ ] **n.** step". ` +
-          `Then do the work, ticking each step to "- [x]" with edit_file immediately after completing it. ` +
-          `When every box is ticked and the result is verified, give your final summary and STOP.]`;
-      }
+    // deterministic completion signal as a plan — the agent declares its steps
+    // via update_plan, ticks them off, and "all done" ends auto-continue.
+    if (big && mode === "agent" && !this.planExecuting && !opts.skipUserItem) {
+      this.planExecuting = true;
+      const title = text.length > 80 ? `${text.slice(0, 80)}…` : text;
+      this.planState = { phase: "building", doc: { title, goal: text, steps: [], sections: [] } };
+      PlanPanel.render(this.planState);
+      this.setPlanCard("building", title);
+      text +=
+        `\n\n[Multi-step task. FIRST call the update_plan tool with a "steps" array listing every step you intend to take (short imperatives). ` +
+        `Then do the work; IMMEDIATELY after finishing each step call update_plan with { step: <number>, status: "done" } so the user watches live progress in the Plan panel. ` +
+        `When every step is done and the result is verified, give your final summary and STOP.]`;
     }
 
     this.abort = new AbortController();
@@ -2030,7 +2104,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       this.sendState(false);
       this.pushContextUsage();
       void this.maybeAutoCompact();
-      const reason = await this.unfinishedWorkReason();
+      const reason = this.unfinishedWorkReason();
       this.lastTurnEnd = undefined;
       if (reason) {
         this.autoContinues += 1;
@@ -2038,8 +2112,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         this.items.push({ kind: "text", role: "assistant", content: note });
         this.post({ type: "assistantStart" });
         this.post({ type: "delta", text: note });
-        const planNote = this.planFileActive && this.currentPlanRel
-          ? ` Work through the unchecked steps in ${this.currentPlanRel} and tick each one off.`
+        const planNote = this.planExecuting
+          ? ' Work through the remaining plan steps and call update_plan { step, status: "done" } after each.'
           : "";
         void this.handleSend(
           `You stopped before the task was finished. Continue exactly where you left off — do the action you last announced, then keep going until every remaining step is done.${planNote} Do not stop again to narrate; act.`,
@@ -2061,20 +2135,19 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
    * Returns a human-readable reason, or undefined when the turn looks done.
    * Never fires when the model is asking the user something, or past budget.
    */
-  private async unfinishedWorkReason(): Promise<string | undefined> {
+  private unfinishedWorkReason(): string | undefined {
     const end = this.lastTurnEnd;
     if (!end || this.autoContinues >= AUTO_CONTINUE_MAX || this.pendingAsk) return undefined;
     const text = end.finalText.trim();
     if (/\?\s*$/.test(text)) return undefined; // genuinely waiting on the user
-    if (this.planFileActive) {
-      const open = await this.planHasUncheckedSteps();
-      if (open === false) {
+    if (this.planExecuting && this.planState?.doc) {
+      if (!this.planHasUncheckedSteps()) {
         // Every step ticked → the task IS done. Stand down completely: no
         // cap/intent continues either, or the agent invents busywork forever.
-        this.planFileActive = false;
+        this.planExecuting = false;
         return undefined;
       }
-      if (open) return "the plan still has unchecked steps";
+      return "the plan still has unchecked steps";
     }
     if (end.capHit) return "hit the per-turn step limit before finishing";
     // Announced-but-undone: last sentence declares a future action. "let me
@@ -2087,15 +2160,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     return undefined;
   }
 
-  /** True if the current plan document still contains "- [ ]" steps. */
-  private async planHasUncheckedSteps(): Promise<boolean | undefined> {
-    if (!this.currentPlanUri) return undefined;
-    try {
-      const raw = Buffer.from(await vscode.workspace.fs.readFile(this.currentPlanUri)).toString("utf8");
-      return hasUncheckedSteps(raw);
-    } catch {
-      return undefined; // plan file gone — no signal
-    }
+  /** True if the in-memory plan still has steps not marked done. */
+  private planHasUncheckedSteps(): boolean {
+    return this.planState?.doc?.steps.some((s) => !s.done) ?? false;
   }
 
   /**

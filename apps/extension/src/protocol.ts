@@ -35,6 +35,7 @@ export type WebviewToHost =
   | { type: "queryWorkflows"; token: number }
   | { type: "removeQueued"; id: string }
   | { type: "clearQueue" }
+  | { type: "openPlanPanel" }
   /** Push the currently running command to the background (keeps running in the terminal). */
   | { type: "backgroundCommand" }
   | { type: "planDecision"; usePlan: boolean }
@@ -77,7 +78,9 @@ export type UiItem =
   | { kind: "thinking"; content: string; seconds: number }
   | { kind: "tool"; id: string; name: string; argsSummary: string; status: "running" | "ok" | "error" | "declined"; output?: string }
   /** A file being written live — code streams in as the model generates it. */
-  | { kind: "write"; id: string; path: string; code: string; status: "streaming" | "running" | "ok" | "error" | "declined" };
+  | { kind: "write"; id: string; path: string; code: string; status: "streaming" | "running" | "ok" | "error" | "declined" }
+  /** Compact card linking to the Plan panel (the plan itself lives in the panel). */
+  | { kind: "plan"; status: "drafting" | "ready" | "building" | "done"; title: string };
 
 /** Extension → webview */
 export type HostToWebview =
