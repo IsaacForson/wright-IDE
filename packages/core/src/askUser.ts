@@ -42,6 +42,9 @@ export function createAskUserTool(waitForAnswers: AskUserWaiter): Tool {
           "choices as a markdown questionnaire. " +
           "Do NOT use after a finished answer, for polite 'anything else?', or to re-list facts. " +
           "Each question: `prompt` = topic; `options` = concrete answers only (never the topic). " +
+          "Each option must be ONE specific, mutually-exclusive choice — NEVER bundle alternatives " +
+          "(do NOT write 'Flutter/React Native' as one option; list 'Flutter', 'React Native', 'Ionic' " +
+          "as separate options). The user can also type a custom answer, so offer the real distinct contenders. " +
           "At most 3 questions. One JSON object. Then STOP and wait for the tool result.",
         parameters: {
           type: "object",

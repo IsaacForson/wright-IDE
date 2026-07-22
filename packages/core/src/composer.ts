@@ -1,6 +1,7 @@
 import type { ModelClient } from "./client.js";
 import type { StreamEvent } from "./types.js";
 import type { SemanticIndex } from "./rag/tool.js";
+import type { AskUserQuestion } from "./askUser.js";
 
 /**
  * Composer planning step (Phase 8). Before a multi-file task runs, the
@@ -47,6 +48,8 @@ export interface PlanRequest {
    * the bare task text and reports "no prior context".
    */
   history?: string;
+  /** The user's answers to clarifying questions, folded into the plan brief. */
+  answers?: string;
 }
 
 export function buildPlanMessages(req: PlanRequest): Array<{ role: "system" | "user"; content: string }> {
@@ -55,6 +58,7 @@ export function buildPlanMessages(req: PlanRequest): Array<{ role: "system" | "u
     user += `Conversation so far (context — the task below may continue this work):\n${req.history}\n\n`;
   }
   user += `Task:\n${req.task}`;
+  if (req.answers) user += `\n\nThe user answered these clarifying questions — honor them exactly:\n${req.answers}`;
   if (req.context) user += `\n\nRelevant code context (retrieved automatically):\n${req.context}`;
   if (req.priorPlan && req.feedback) {
     user += `\n\nYou previously proposed this plan:\n${req.priorPlan}\n\nThe user wants it revised: ${req.feedback}\nProduce the full updated plan.`;
@@ -76,6 +80,83 @@ export async function generatePlan(
     opts,
   );
   return result.message.content ?? "";
+}
+
+const PLAN_CLARIFY_PROMPT = `You are Wright's planning module, deciding whether to ask the user clarifying questions BEFORE drafting an implementation plan. A plan that guesses the wrong platform or stack is worse than a short question.
+
+Ask ONLY when a choice would MATERIALLY change the plan and you cannot safely infer it from the task or existing code: target platform (web / iOS / Android / cross-platform / desktop), core language/framework, backend or database choice, auth approach, or MVP scope. Do NOT ask about trivial details, naming, or things the task already answers.
+
+Respond with ONLY a JSON object (no prose, no code fence):
+{"questions":[{"id":"platform","prompt":"Which platform(s) should this target?","allow_multiple":false,"options":[{"id":"web","label":"Web (React)","recommended":true},{"id":"cross","label":"Cross-platform (React Native)"},{"id":"ios","label":"iOS (Swift)"}]}]}
+
+Rules: at most 3 questions; each has 3-6 options; mark exactly one recommended per question. Each option must be ONE specific, mutually-exclusive choice — NEVER bundle alternatives into a single option. For "which cross-platform framework", list "Flutter", "React Native", "Ionic", "Expo" as SEPARATE options; do NOT write "Flutter/React Native" as one option (the user can only build with one). The user can also type their own answer, so offer the real distinct contenders. If the task is already specific enough to plan without guessing, respond with {"questions":[]}.`;
+
+/**
+ * Decide whether the plan needs clarification first. Returns the questions to
+ * ask (in the ask_user shape) or [] when the task is clear enough to plan.
+ * Tolerant of models that wrap the JSON in prose or a code fence.
+ */
+export async function clarifyPlan(
+  client: ModelClient,
+  model: string,
+  req: PlanRequest,
+  opts: { signal?: AbortSignal } = {},
+): Promise<AskUserQuestion[]> {
+  const user =
+    `Task:\n${req.task}` +
+    (req.history ? `\n\nConversation so far:\n${req.history}` : "") +
+    (req.context ? `\n\nRelevant existing code:\n${req.context}` : "");
+  let text: string;
+  try {
+    const result = await client.complete(
+      {
+        model,
+        messages: [
+          { role: "system", content: PLAN_CLARIFY_PROMPT },
+          { role: "user", content: user },
+        ],
+        max_tokens: 700,
+        temperature: 0.2,
+      },
+      { signal: opts.signal },
+    );
+    text = result.message.content ?? "";
+  } catch {
+    return []; // never block planning on a clarify failure
+  }
+  const match = text.match(/\{[\s\S]*\}/);
+  if (!match) return [];
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(match[0]);
+  } catch {
+    return [];
+  }
+  const raw = (parsed as { questions?: unknown }).questions;
+  if (!Array.isArray(raw)) return [];
+  const questions: AskUserQuestion[] = [];
+  for (const q of raw.slice(0, 3)) {
+    if (!q || typeof q !== "object") continue;
+    const { id, prompt, options, allow_multiple } = q as Record<string, unknown>;
+    if (typeof prompt !== "string" || !Array.isArray(options)) continue;
+    const opts2 = options
+      .filter((o): o is Record<string, unknown> => !!o && typeof o === "object" && typeof (o as { label?: unknown }).label === "string")
+      .slice(0, 6)
+      .map((o, i) => ({
+        id: typeof o.id === "string" ? o.id : `o${i}`,
+        label: String(o.label),
+        description: typeof o.description === "string" ? o.description : undefined,
+        recommended: o.recommended === true,
+      }));
+    if (opts2.length < 2) continue;
+    questions.push({
+      id: typeof id === "string" ? id : `q${questions.length}`,
+      prompt,
+      options: opts2,
+      allow_multiple: allow_multiple === true,
+    });
+  }
+  return questions;
 }
 
 /** Gather grounding context for the planner from the semantic index. */

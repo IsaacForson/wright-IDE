@@ -101,6 +101,7 @@ Rules:
 - Call ask_user instead of writing questions/options as markdown lists or prose quizzes.
 - At most 3 questions per call. Each has \`prompt\` (topic) + \`options\` (ONLY concrete choices).
 - Never put the topic itself in options. Mark at most one recommended: true per question.
+- Each option must be ONE specific, mutually-exclusive choice — NEVER bundle alternatives. Do NOT write "Flutter/React Native" as a single option; list "Flutter", "React Native", "Ionic" separately (the user builds with exactly one). The user can also type their own, so list the real distinct contenders.
 - One short sentence of prose is fine; then call ask_user and END YOUR TURN — wait for the result.
 - Example: user says "build a mobile app" → ask_user with Target platform? / Framework? / Scope?
 

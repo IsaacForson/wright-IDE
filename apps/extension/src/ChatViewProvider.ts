@@ -26,6 +26,7 @@ import {
   parsePlanSteps,
   formatModelRef,
   generatePlan,
+  clarifyPlan,
   nvidiaProvider,
   planContext,
   type AskUserPayload,
@@ -205,7 +206,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   /** Consecutive automatic continues for one user task. */
   private autoContinues = 0;
   /** How the last agent turn ended — inputs for the unfinished-work detector. */
-  private lastTurnEnd: { capHit: boolean; finalText: string } | undefined;
+  private lastTurnEnd: { capHit: boolean; finalText: string; errored?: boolean } | undefined;
   /** In-memory plan state — source of truth for the Plan panel (no file). */
   private planState: PlanState | undefined;
   /** True once Build is pressed and steps remain — keeps auto-continue alive. */
@@ -1486,25 +1487,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this.memoryStore = new FileMemoryStore(this.rootPath);
     tools.push(createRememberTool(this.memoryStore));
     tools.push(this.planTool());
-    tools.push(
-      createAskUserTool(async (payload, signal) => {
-        const id = `ask${Date.now().toString(36)}`;
-        return await new Promise<string>((resolve, reject) => {
-          if (this.pendingAsk) {
-            this.pendingAsk.reject(new Error("Superseded by a newer ask_user call."));
-          }
-          this.pendingAsk = { id, resolve, reject };
-          this.post({ type: "askUser", id, questions: payload.questions });
-          const onAbort = () => {
-            if (this.pendingAsk?.id === id) {
-              this.pendingAsk = undefined;
-              reject(new ModelError("aborted", "Question cancelled"));
-            }
-          };
-          signal?.addEventListener("abort", onAbort, { once: true });
-        });
-      }),
-    );
+    tools.push(createAskUserTool((payload, signal) => this.askQuestions(payload, signal)));
     if (mode === "ask") {
       const readOnly = new Set([
         "read_file",
@@ -1714,6 +1697,27 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     return turns.length ? turns.join("\n") : undefined;
   }
 
+  /**
+   * Show selectable clarifying questions in the chat and wait for the user's
+   * picks. Shared by the agent's ask_user tool and Plan mode's pre-plan
+   * clarification. Resolves with the human-readable answer text.
+   */
+  private askQuestions(payload: AskUserPayload, signal?: AbortSignal): Promise<string> {
+    const id = `ask${Date.now().toString(36)}`;
+    return new Promise<string>((resolve, reject) => {
+      if (this.pendingAsk) this.pendingAsk.reject(new Error("Superseded by a newer question."));
+      this.pendingAsk = { id, resolve, reject };
+      this.post({ type: "askUser", id, questions: payload.questions });
+      const onAbort = () => {
+        if (this.pendingAsk?.id === id) {
+          this.pendingAsk = undefined;
+          reject(new ModelError("aborted", "Question cancelled"));
+        }
+      };
+      signal?.addEventListener("abort", onAbort, { once: true });
+    });
+  }
+
   /** Build the structured plan doc (in memory — no file) from a generated plan. */
   private buildPlanDoc(task: string, planBody: string, steps: string[]) {
     return parsePlanDoc(buildPlanMarkdown(task, steps, new Date(), planBody));
@@ -1819,12 +1823,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       return;
     }
     this.abort = new AbortController();
-    // The plan STREAMS INTO THE PLAN PANEL, not the chat transcript. The chat
-    // gets only a compact card with a reopen link.
     this.planExecuting = false;
-    this.planState = { phase: "drafting", task, draft: "" };
-    PlanPanel.render(this.planState);
-    this.setPlanCard("drafting", task);
     let lastRender = 0;
 
     try {
@@ -1834,11 +1833,27 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       const indexer = root && config.apiKeys.length ? await this.indexService.ensure(embedClient, root.fsPath) : undefined;
       const context = indexer ? await planContext(indexer, task, this.abort.signal) : undefined;
       const history = this.recentConversation();
+
+      // Clarify BEFORE drafting (like Agent mode) — Plan mode must ask about
+      // platform/stack/scope instead of silently assuming. Skipped on revisions.
+      let answers: string | undefined;
+      if (!feedback) {
+        const questions = await clarifyPlan(client, planModel, { task, context, history }, { signal: this.abort.signal });
+        if (questions.length > 0) {
+          answers = await this.askQuestions({ questions }, this.abort.signal);
+        }
+      }
+
+      // Now draft — STREAMS INTO THE PLAN PANEL, not the chat transcript. The
+      // chat gets only a compact card with a reopen link.
+      this.planState = { phase: "drafting", task, draft: "" };
+      PlanPanel.render(this.planState);
+      this.setPlanCard("drafting", task);
       let draft = "";
       const plan = await generatePlan(
         client,
         planModel,
-        { task, context, priorPlan, feedback, history },
+        { task, context, priorPlan, feedback, history, answers },
         {
           signal: this.abort.signal,
           onEvent: (e) => {
@@ -1943,15 +1958,16 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     // deterministic completion signal as a plan — the agent declares its steps
     // via update_plan, ticks them off, and "all done" ends auto-continue.
     if (big && mode === "agent" && !this.planExecuting && !opts.skipUserItem) {
-      this.planExecuting = true;
-      const title = text.length > 80 ? `${text.slice(0, 80)}…` : text;
-      this.planState = { phase: "building", doc: { title, goal: text, steps: [], sections: [] } };
-      PlanPanel.render(this.planState);
-      this.setPlanCard("building", title);
+      // Instruct the agent to declare its checklist via update_plan — but DON'T
+      // pre-create plan state here. If we set planExecuting with an empty step
+      // list and the model writes its plan as prose instead of calling the
+      // tool, the completion detector would read "0 steps → done" and stop the
+      // agent mid-task. The update_plan tool creates the state when actually
+      // called; until then, completion falls back to the cap/intent heuristics.
       text +=
-        `\n\n[Multi-step task. FIRST call the update_plan tool with a "steps" array listing every step you intend to take (short imperatives). ` +
-        `Then do the work; IMMEDIATELY after finishing each step call update_plan with { step: <number>, status: "done" } so the user watches live progress in the Plan panel. ` +
-        `When every step is done and the result is verified, give your final summary and STOP.]`;
+        `\n\n[Multi-step task. FIRST call the update_plan tool with a "steps" array listing every step you intend to take (short imperatives) — this is a tool call, NOT prose. ` +
+        `Then do the work; IMMEDIATELY after finishing each step call update_plan with { step: <number>, status: "done" }. ` +
+        `Do NOT stop until every step is done and verified; then give your final summary and STOP.]`;
     }
 
     this.abort = new AbortController();
@@ -2095,6 +2111,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         const message = err instanceof ModelError ? `[${err.kind}] ${err.message}` : String(err);
         this.post({ type: "error", message });
         this.post({ type: "turnDone" });
+        // A turn that ERRORS out mid-plan (rate-limit after failover, 5xx,
+        // network) never emitted a "done" event — so record it here, else the
+        // plan strands with steps unchecked and auto-continue never fires.
+        this.lastTurnEnd = { capHit: false, finalText: "", errored: true };
       }
     } finally {
       this.abort = undefined;
@@ -2104,6 +2124,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       this.sendState(false);
       this.pushContextUsage();
       void this.maybeAutoCompact();
+      const wasErrored = this.lastTurnEnd?.errored ?? false;
       const reason = this.unfinishedWorkReason();
       this.lastTurnEnd = undefined;
       if (reason) {
@@ -2115,10 +2136,15 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         const planNote = this.planExecuting
           ? ' Work through the remaining plan steps and call update_plan { step, status: "done" } after each.'
           : "";
-        void this.handleSend(
-          `You stopped before the task was finished. Continue exactly where you left off — do the action you last announced, then keep going until every remaining step is done.${planNote} Do not stop again to narrate; act.`,
-          { skipUserItem: true, mode },
-        );
+        const resume = () =>
+          void this.handleSend(
+            `You stopped before the task was finished. Continue exactly where you left off — do the action you last announced, then keep going until every remaining step is done.${planNote} Do not stop again to narrate; act.`,
+            { skipUserItem: true, mode },
+          );
+        // After an error, wait a few seconds so a transient rate-limit / 5xx
+        // can clear before we retry — otherwise resume immediately.
+        if (wasErrored) setTimeout(resume, 4_000);
+        else resume();
       } else {
         this.drainQueue();
       }
@@ -2140,7 +2166,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     if (!end || this.autoContinues >= AUTO_CONTINUE_MAX || this.pendingAsk) return undefined;
     const text = end.finalText.trim();
     if (/\?\s*$/.test(text)) return undefined; // genuinely waiting on the user
-    if (this.planExecuting && this.planState?.doc) {
+    // Only treat the plan as the completion signal once it actually HAS steps.
+    // An empty step list (agent wrote its plan as prose, never called
+    // update_plan) must NOT read as "done" — fall through to the heuristics.
+    if (this.planExecuting && (this.planState?.doc?.steps.length ?? 0) > 0) {
       if (!this.planHasUncheckedSteps()) {
         // Every step ticked → the task IS done. Stand down completely: no
         // cap/intent continues either, or the agent invents busywork forever.

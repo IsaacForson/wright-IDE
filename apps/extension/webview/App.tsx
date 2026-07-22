@@ -1402,11 +1402,13 @@ function AskUserMessage({
   const [selected, setSelected] = useState<Record<string, string[]>>(() =>
     Object.fromEntries(ask.questions.map((q) => [q.id, [] as string[]])),
   );
-  const [custom, setCustom] = useState("");
-  const [customMode, setCustomMode] = useState(false);
+  // Per-question free-text answer ("type your own"). Non-empty overrides picks.
+  const [custom, setCustom] = useState<Record<string, string>>(() =>
+    Object.fromEntries(ask.questions.map((q) => [q.id, ""])),
+  );
 
   const toggle = (qid: string, oid: string, multi: boolean) => {
-    setCustomMode(false);
+    setCustom((prev) => ({ ...prev, [qid]: "" })); // choosing an option clears this question's custom text
     setSelected((prev) => {
       const cur = prev[qid] ?? [];
       if (multi) {
@@ -1416,22 +1418,29 @@ function AskUserMessage({
     });
   };
 
-  const picks = ask.questions.flatMap((q) => {
-    const ids = selected[q.id] ?? [];
-    return ids.map((oid) => {
-      const opt = q.options.find((o) => o.id === oid);
-      return opt ? `${q.prompt}: ${opt.label}` : "";
-    }).filter(Boolean);
-  });
+  const setCustomFor = (qid: string, value: string) => {
+    setCustom((prev) => ({ ...prev, [qid]: value }));
+    if (value.trim()) setSelected((prev) => ({ ...prev, [qid]: [] })); // typing overrides option picks
+  };
 
-  const canSubmit = customMode
-    ? custom.trim().length > 0
-    : ask.questions.every((q) => (selected[q.id] ?? []).length > 0);
+  // One answer per question: typed text wins, else the chosen option labels.
+  const answerFor = (q: (typeof ask.questions)[number]): string => {
+    const typed = (custom[q.id] ?? "").trim();
+    if (typed) return typed;
+    const labels = (selected[q.id] ?? [])
+      .map((oid) => q.options.find((o) => o.id === oid)?.label)
+      .filter(Boolean);
+    return labels.join(", ");
+  };
+
+  const answered = (q: (typeof ask.questions)[number]) =>
+    (custom[q.id] ?? "").trim().length > 0 || (selected[q.id] ?? []).length > 0;
+
+  const canSubmit = ask.questions.every(answered);
 
   const submit = () => {
     if (!canSubmit) return;
-    if (customMode) onSubmit(custom.trim());
-    else onSubmit(picks.join("\n"));
+    onSubmit(ask.questions.map((q) => `${q.prompt}: ${answerFor(q)}`).join("\n"));
   };
 
   return (
@@ -1458,28 +1467,23 @@ function AskUserMessage({
                 </button>
               );
             })}
+            {/* Every question gets its own free-text answer. */}
+            <input
+              className={`question-input${(custom[q.id] ?? "").trim() ? " selected" : ""}`}
+              placeholder="…or type your own answer"
+              value={custom[q.id] ?? ""}
+              onChange={(e) => setCustomFor(q.id, e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && canSubmit) submit();
+              }}
+            />
           </div>
         </div>
       ))}
-      <div className="question-options">
-        <input
-          className={`question-input${customMode ? " selected" : ""}`}
-          placeholder="…or tell me something else."
-          value={custom}
-          onFocus={() => setCustomMode(true)}
-          onChange={(e) => {
-            setCustom(e.target.value);
-            setCustomMode(true);
-          }}
-          onKeyDown={(e) => {
-            if (e.key === "Enter") submit();
-          }}
-        />
-        <div className="question-submit-row">
-          <button className="btn primary" disabled={!canSubmit} onClick={submit}>
-            <Icon name="send" size={12} /> Submit
-          </button>
-        </div>
+      <div className="question-submit-row">
+        <button className="btn primary" disabled={!canSubmit} onClick={submit}>
+          <Icon name="send" size={12} /> Submit
+        </button>
       </div>
     </div>
   );
