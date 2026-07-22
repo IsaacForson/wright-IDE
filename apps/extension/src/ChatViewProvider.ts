@@ -70,6 +70,20 @@ function modelShortLabel(ref: string): string {
   return afterProvider.split("/").pop() ?? afterProvider;
 }
 
+/** Friendly OS name for the agent prompt so it picks the right package manager. */
+function osLabel(): string {
+  switch (os.platform()) {
+    case "darwin":
+      return "macOS (package manager: Homebrew)";
+    case "win32":
+      return "Windows (package manager: winget or choco)";
+    case "linux":
+      return "Linux (package manager: apt/dnf/pacman)";
+    default:
+      return os.platform();
+  }
+}
+
 /** Cheap synchronous "is this a big task?" for model routing (no model call). */
 function isBigTaskHeuristic(text: string): boolean {
   const words = text.trim().split(/\s+/).length;
@@ -1547,7 +1561,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       // Deep research fans out into many search rounds; give it headroom.
       maxIterations: (this.agentMaxIterations = research === "deep" ? 60 : research === "research" ? 40 : 25),
       systemPrompt:
-        agentSystemPrompt({ workspaceName: vscode.workspace.name, rules, userRules, memories, mode, research }) +
+        agentSystemPrompt({ workspaceName: vscode.workspace.name, rules, userRules, memories, mode, research, platform: osLabel() }) +
         (root ? "" : NO_WORKSPACE_NOTE),
       approve: async (name, args) => {
         // Session trust from the in-chat permission card.
